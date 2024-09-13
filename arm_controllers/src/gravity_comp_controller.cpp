@@ -132,10 +132,8 @@ bool GravityCompController::init(hardware_interface::EffortJointInterface* hw, r
 
 	//subscriber from the key command
 	motion_command_sub_ = n.subscribe("/motion_command", 1, &GravityCompController::motionCommandCB, this);
-	
+    commands_buffer_.initRT(std::vector<double>(2 * n_joints_, 0.0));  // Initialize with zeros
 
-    // Initialize mode flag
-    use_circular_motion_ = false;
 
     // Command subscriber
     commands_buffer_.writeFromNonRT(std::vector<double>(n_joints_, 0.0));
@@ -163,43 +161,46 @@ bool GravityCompController::init(hardware_interface::EffortJointInterface* hw, r
     return true;
 }
 
-//set the flag fot the chaning in behavior
-void GravityCompController::motionCommandCB(const std_msgs::Float64MultiArrayConstPtr& msg)
-{
-    if (msg->data.size() != 1)
-    {
-        ROS_ERROR("Expected a single float value for motion command!");
+
+void GravityCompController::motionCommandCB(const std_msgs::Float64MultiArrayConstPtr& msg) {
+    // Check if the message contains both positions and velocities for all joints
+    if (msg->data.size() != 2 * n_joints_) {
+        ROS_ERROR("Expected %u positions and velocities, but got %u!", 2 * n_joints_, (unsigned int)msg->data.size());
+
         return;
     }
 
-    double command = msg->data[0];
-    if (command == 1.0)
-    {
-        use_circular_motion_ = true;
+    // Create a temporary vector to store the new commands (positions and velocities)
+    std::vector<double> new_commands(2 * n_joints_);
+
+    // Extract positions and velocities
+    for (size_t i = 0; i < n_joints_; i++) {
+        new_commands[i] = msg->data[i];               // Position
+        new_commands[i + n_joints_] = msg->data[i + n_joints_]; // Velocity
     }
-    else if (command == 0.0)
-    {
-        use_circular_motion_ = false;
-    }
-    else
-    {
-        ROS_WARN("Unknown command value received: %f", command);
-    }
+
+    // Write the new commands into the real-time buffer
+    commands_buffer_.writeFromNonRT(new_commands);  // Use the buffer for thread-safe communication
 }
 
+void GravityCompController::starting(const ros::Time& time) {
+    // Set desired initial positions
+    std::vector<double> initial_positions = {0.1, -1, -0.5, 0.0, +1, -0.1}; // Define your fixed starting positions
 
-
-void GravityCompController::starting(const ros::Time& time)
-{
-    // Get joint positions
-    for(size_t i = 0; i < n_joints_; i++) 
-    {
+    for (size_t i = 0; i < n_joints_; i++) {
+        q_cmd_(i) = initial_positions[i];  // Set fixed position command
         q_(i) = joints_[i].getPosition();
         qdot_(i) = joints_[i].getVelocity();
+
+        ROS_INFO("Starting position for joint %lu: %f", i, q_cmd_(i));
     }
 
-    ROS_INFO("Starting Gravity Compensation Controller");
+    ROS_INFO("Starting Gravity Compensation Controller in fixed position mode");
 }
+
+
+
+ 
 
 void GravityCompController::commandCB(const std_msgs::Float64MultiArrayConstPtr& msg)
 {
@@ -211,99 +212,99 @@ void GravityCompController::commandCB(const std_msgs::Float64MultiArrayConstPtr&
     commands_buffer_.writeFromNonRT(msg->data);
 }
 
-void GravityCompController::update(const ros::Time& time, const ros::Duration& period)
-{
-    std::vector<double>& commands = *commands_buffer_.readFromRT();
-    double dt = period.toSec();
-    static double t = 0;
 
-    // Define the parameters for the ellipse
-    double a = 10.0; // semi-major axis
-    double b = 5.0;  // semi-minor axis
-    double omega = 0.5; // angular frequency
+void GravityCompController::update(const ros::Time& time, const ros::Duration& period) {
+    // Read the latest commands from the real-time buffer filled by motionCommandCB
+    std::vector<double> *commands_ptr = commands_buffer_.readFromRT();
 
-    for (size_t i = 0; i < n_joints_; i++)
-    {
-        if (use_circular_motion_)
-        {
-            // Elliptical motion parameters
-            double x = a * cos(omega * t);
-            double y = b * sin(omega * t);
-            double z = 0; // Keep this zero or adjust as needed
+    if (!commands_ptr) {
+        ROS_WARN_THROTTLE(1.0, "No commands received yet.");
+        return;
+    }
 
-            // Map x, y, z to joint commands (assuming a 6-joint robot with 3 DoF)
-            q_cmd_(i) = x; // This is just an example, adjust as needed for your robot
-            qdot_cmd_(i) = y; // Same here, adjust based on desired motion
+    std::vector<double>& commands = *commands_ptr;  // Dereference the real-time buffer pointer
+    double dt = period.toSec();  // Time step in seconds
+    double q_cmd_old;
 
-            // Adjust the other parameters to create a smoother transition
-            qdot_cmd_(i) = -omega * a * sin(omega * t); // Derivative of x
-        }
-        else
-        {
-            // Sinusoidal motion
-            q_cmd_(i) = 45 * D2R * sin(PI / 2 * t);
-            qdot_cmd_(i) = 45 * D2R * PI / 2 * cos(PI / 2 * t);
-        }
+    static double t = 0;  // Time variable to track the simulation time for sinusoidal motions
 
+    for (size_t i = 0; i < n_joints_; i++) {
+        // Store old joint command for possible future use
+        q_cmd_old = q_cmd_(i);
+
+        // Set the command for each joint from the latest received command
+        q_cmd_(i) = commands[i];  // Position command for the i-th joint
+        qdot_cmd_(i) = commands[i + n_joints_];  // Velocity command for the i-th joint
+
+        ROS_DEBUG("Command for joint %lu: Position %f, Velocity %f", i, q_cmd_(i), qdot_cmd_(i));
+
+        // Enforce joint limits to make sure the command doesn't exceed joint capabilities
         enforceJointLimits(q_cmd_(i), i);
-        q_(i) = joints_[i].getPosition();
-        qdot_(i) = joints_[i].getVelocity();
 
-        if (joint_urdfs_[i]->type == urdf::Joint::REVOLUTE)
-        {
+        // Get the current joint position and velocity from the hardware
+        q_(i) = joints_[i].getPosition();  // Actual joint position for the i-th joint
+        qdot_(i) = joints_[i].getVelocity();  // Actual joint velocity for the i-th joint
+
+        // Compute position error between the command and the actual position
+        if (joint_urdfs_[i]->type == urdf::Joint::REVOLUTE) {
+            // For revolute joints, compute the shortest angular distance considering limits
             angles::shortest_angular_distance_with_limits(
-                q_(i),
-                q_cmd_(i),
-                joint_urdfs_[i]->limits->lower,
-                joint_urdfs_[i]->limits->upper,
-                q_error_(i));
-        }
-        else if (joint_urdfs_[i]->type == urdf::Joint::CONTINUOUS)
-        {
+                q_(i), q_cmd_(i), joint_urdfs_[i]->limits->lower, joint_urdfs_[i]->limits->upper, q_error_(i));
+        } else if (joint_urdfs_[i]->type == urdf::Joint::CONTINUOUS) {
+            // For continuous joints, compute the shortest angular distance
             q_error_(i) = angles::shortest_angular_distance(q_(i), q_cmd_(i));
+        } else {  // For prismatic joints
+            q_error_(i) = q_cmd_(i) - q_(i);  // Linear distance error
         }
-        else
-        {
-            q_error_(i) = q_cmd_(i) - q_(i);
-        }
+
+        // Compute velocity error between the command and the actual velocity
         q_error_dot_(i) = qdot_cmd_(i) - qdot_(i);
 
-        tau_fric_(i) = 1 * qdot_(i) + 1 * KDL::sign(qdot_(i));
-    }
+        // Friction compensation (you can adjust parameters for real-world testing)
+        tau_fric_(i) = 1.0 * qdot_(i) + 1.0 * KDL::sign(qdot_(i));
 
-    t += dt;
-    
-    id_solver_->JntToGravity(q_, G_);
+        // Gravity compensation (calculates gravity-induced torque based on current joint positions)
+        id_solver_->JntToGravity(q_, G_);
 
-    for (int i = 0; i < n_joints_; i++)
-    {
-        tau_cmd_(i) = G_(i) + pids_[i].computeCommand(q_error_(i), q_error_dot_(i), ros::Duration(dt));
-        controller_state_pub_->msg_.effort_feedforward[i] = G_(i);
-        tau_cmd_(i) += pids_[i].computeCommand(q_error_(i), q_error_dot_(i), ros::Duration(dt));
+        // Compute total torque command:
+        tau_cmd_(i) = G_(i) + tau_fric_(i);  // Start with gravity compensation and add friction compensation
 
-        if (tau_cmd_(i) >= joint_urdfs_[i]->limits->effort)
-            tau_cmd_(i) = joint_urdfs_[i]->limits->effort;
+        
+        // Add the PID control effort based on the position and velocity errors
+        tau_cmd_(i) += pids_[i].computeCommand(q_error_(i), q_error_dot_(i), period);
 
-        if (tau_cmd_(i) <= -joint_urdfs_[i]->limits->effort)
-            tau_cmd_(i) = -joint_urdfs_[i]->limits->effort;
+        // Saturate the torque command to avoid exceeding joint effort limits
+        tau_cmd_(i) = std::max(-joint_urdfs_[i]->limits->effort, std::min(tau_cmd_(i), joint_urdfs_[i]->limits->effort));
 
+        // Apply the computed torque command to the joint
         joints_[i].setCommand(tau_cmd_(i));
-
-        controller_state_pub_->msg_.command[i] = q_cmd_(i);
-        controller_state_pub_->msg_.command_dot[i] = qdot_cmd_(i);
-        controller_state_pub_->msg_.state[i] = q_(i);
-        controller_state_pub_->msg_.state_dot[i] = qdot_(i);
-        controller_state_pub_->msg_.error[i] = q_error_(i);
-        controller_state_pub_->msg_.error_dot[i] = q_error_dot_(i);
-        controller_state_pub_->msg_.effort_command[i] = tau_cmd_(i);
-        controller_state_pub_->msg_.effort_feedforward[i] = G_(i);
-        controller_state_pub_->msg_.effort_feedback[i] = tau_fric_(i);
     }
 
-    controller_state_pub_->msg_.header.stamp = time;
-    controller_state_pub_->unlockAndPublish();
-}
+    // Publish the current state every 10 iterations to reduce communication overhead
+    if (loop_count_ % 10 == 0) {
+        if (controller_state_pub_->trylock()) {
+            controller_state_pub_->msg_.header.stamp = time;
+            for (size_t i = 0; i < n_joints_; i++) {
+                // Populate the message with the current state and commands for the i-th joint
+                controller_state_pub_->msg_.command[i] = R2D * q_cmd_(i);  // Commanded position (radians to degrees)
+                controller_state_pub_->msg_.command_dot[i] = R2D * qdot_cmd_(i);  // Commanded velocity (radians to degrees)
+                controller_state_pub_->msg_.state[i] = R2D * q_(i);  // Actual position (radians to degrees)
+                controller_state_pub_->msg_.state_dot[i] = R2D * qdot_(i);  // Actual velocity (radians to degrees)
+                controller_state_pub_->msg_.error[i] = R2D * q_error_(i);  // Position error
+                controller_state_pub_->msg_.error_dot[i] = R2D * q_error_dot_(i);  // Velocity error
+                controller_state_pub_->msg_.effort_command[i] = tau_cmd_(i);  // Total torque command
+                controller_state_pub_->msg_.effort_feedback[i] = tau_cmd_(i) - G_(i);  // PID effort (command - gravity)
+                controller_state_pub_->msg_.effort_feedforward[i] = G_(i);  // Gravity compensation torque
+            }
+            // Unlock and publish the state message
+            controller_state_pub_->unlockAndPublish();
+        }
+    }
 
+    // Increment time for periodic functions like sinusoidal motion
+    t += dt;
+    loop_count_++;
+}
 
 
 

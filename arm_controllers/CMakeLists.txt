@@ -1,3 +1,4 @@
+cmake_policy(SET CMP0048 NEW)
 cmake_minimum_required(VERSION 2.8.3)
 project(arm_controllers)
 
@@ -11,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   dynamic_reconfigure
   roscpp
   std_msgs
+  rospy  # Added for Python script support
 )
 
 # Dynamic reconfigure
@@ -37,7 +39,6 @@ catkin_package(
     dynamic_reconfigure
     roscpp
     std_msgs
-  LIBRARIES ${PROJECT_NAME}
 )
 
 # Declare the library
@@ -63,7 +64,7 @@ target_link_libraries(motion_switcher_node ${catkin_LIBRARIES})
 add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencfg)
 add_dependencies(motion_switcher_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-# Installation
+# Installation for C++ files
 install(TARGETS ${PROJECT_NAME} motion_switcher_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -72,4 +73,12 @@ install(TARGETS ${PROJECT_NAME} motion_switcher_node
 
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
+)
+
+
+catkin_install_python(PROGRAMS 
+  scripts/joint_state_printer.py
+  scripts/movment_publisher.py  # Added your new Python file
+  scripts/subs.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

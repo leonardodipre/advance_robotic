@@ -20,7 +20,8 @@
   <build_depend>dynamic_reconfigure</build_depend>
   <build_depend>roscpp</build_depend>
   <build_depend>std_msgs</build_depend>
-  
+  <build_depend>rospy</build_depend> <!-- Added for Python script support -->
+
   <run_depend>controller_interface</run_depend>
   <run_depend>urdf</run_depend>
   <run_depend>control_msgs</run_depend>
@@ -30,6 +31,9 @@
   <run_depend>dynamic_reconfigure</run_depend>
   <run_depend>roscpp</run_depend>
   <run_depend>std_msgs</run_depend>
+  <run_depend>rospy</run_depend> <!-- Added for Python script support -->
+
+  <run_depend>python3</run_depend>
 
   <export>
     <controller_interface plugin="${prefix}/controller_plugins.xml" />
