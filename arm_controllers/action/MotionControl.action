@@ -1,0 +1,8 @@
+# Goal definition
+int32 motion_type  # 1 for sinusoidal, 2 for circular, etc.
+---
+# Result definition
+bool success  # Whether the action succeeded
+---
+# Feedback definition (optional, useful for showing progress)
+string feedback

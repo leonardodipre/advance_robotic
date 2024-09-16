@@ -9,9 +9,7 @@ import threading
 current_motion = 4  # Default to fixed motion at startup
 custom_angles = [0] * 6  # Default custom angles for all 6 joints
 current_positions = [0] * 6  # Store current joint positions
-end_positions = [0] * 6  # End positions for looping motion
-direction = 1  # 1 for forward, -1 for backward
-looping = False  # Flag to control the looping motion
+target_positions = [0] * 6  # Target positions for linear motion
 
 def print_menu():
     rospy.loginfo("\nMenu:")
@@ -21,6 +19,8 @@ def print_menu():
     rospy.loginfo("4 - Fixed Motion (default)")
     rospy.loginfo("5 - Custom Angle Motion")
     rospy.loginfo("6 - Exit")
+   
+
 
 def get_motion_choice():
     choice = input("Enter your choice (1-6): ")
@@ -63,26 +63,8 @@ def linear_transition(current_position, target_position, t):
     return q_d, q_dot_d
 
 def straight_line_motion(t):
-    global current_positions, end_positions, direction
-    if direction == 1:
-        target_position = end_positions
-    else:
-        target_position = current_positions
-
-    positions, velocities = linear_transition(current_positions, target_position, t)
-    current_positions = positions
-
-    # Check if the transition is complete and switch direction if necessary
-    if linear_transition.tau >= 1:
-        if direction == 1:
-            direction = -1  # Switch to backward direction
-            current_positions = end_positions  # Set new start position
-        else:
-            direction = 1  # Switch to forward direction
-            current_positions = end_positions  # Reset start position
-        linear_transition.prev_time = t  # Reset time for the new direction
-
-    return positions, velocities
+    global current_positions, target_positions
+    return linear_transition(current_positions, target_positions, t)
 
 def fixed_motion():
     position = [0.1, -1, -0.5, 0.0, 1, -0.1]
@@ -97,24 +79,24 @@ def custom_angle_motion():
 
 def get_custom_angles():
     global custom_angles
-    rospy.loginfo("Enter custom angles for each joint (6 values) in degrees")
+    rospy.loginfo("Enter custom angles for each joint (6 values)")
     for i in range(6):
         while True:
             try:
                 angle = float(input(f"Enter angle for joint {i+1}: "))
-                custom_angles[i] = math.radians(end_position)
+                custom_angles[i] = angle
                 break
             except ValueError:
                 rospy.loginfo("Invalid input. Please enter a valid number.")
 
-def get_end_positions():
-    global end_positions
-    rospy.loginfo("Enter end positions for linear motion (6 values) in degrees")
+def get_target_positions():
+    global target_positions
+    rospy.loginfo("Enter target positions for linear motion (6 values) in degree")
     for i in range(6):
         while True:
             try:
-                end_position = float(input(f"Enter end position for joint {i+1}: "))
-                end_positions[i] = math.radians(end_position)  # Convert to radians
+                position = float(input(f"Enter target position for joint {i+1}: "))
+                target_positions[i] = math.radians(position)  # Convert to radians
                 break
             except ValueError:
                 rospy.loginfo("Invalid input. Please enter a valid number.")
@@ -142,20 +124,17 @@ def publish_motion(pub, motion_type, t):
     pub.publish(msg)
 
 def publisher_thread(pub):
-    global current_motion, looping
+    global current_motion
     t = 0
     rate = rospy.Rate(10)  # 10 Hz
 
     while not rospy.is_shutdown():
-        if looping and current_motion == 3:  # Linear motion
-            publish_motion(pub, current_motion, t)
-            t += 0.1  # Increment time
-        else:
-            publish_motion(pub, current_motion, 0)  # Publish the current state without time increment
+        publish_motion(pub, current_motion, t)
+        t += 0.1  # Increment time
         rate.sleep()
 
 def menu_thread():
-    global current_motion, looping
+    global current_motion
     while not rospy.is_shutdown():
         print_menu()
         choice = get_motion_choice()
@@ -170,13 +149,10 @@ def menu_thread():
                 current_motion = choice
                 rospy.loginfo("Custom angles set and motion changed to Custom Angle Motion")
             elif choice == 3:
-                get_end_positions()
+                get_target_positions()
                 current_motion = choice
-                looping = True  # Start looping motion
                 rospy.loginfo("Target positions set and motion changed to Linear Motion")
             else:
-                if current_motion == 3:
-                    looping = False  # Stop looping if another motion is selected
                 current_motion = choice
                 rospy.loginfo(f"Motion changed to {current_motion}")
 
@@ -193,5 +169,4 @@ def main():
     menu_thread()
 
 if __name__ == '__main__':
-    
     main()
