@@ -79,6 +79,7 @@ install(DIRECTORY include/${PROJECT_NAME}/
 catkin_install_python(PROGRAMS 
   scripts/joint_state_printer.py
   scripts/movment_publisher.py  # Added your new Python file
+  scripts/controll_publisher.py
   scripts/subs.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

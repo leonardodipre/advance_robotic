@@ -8,7 +8,6 @@ namespace arm_controllers {
 
 GravityCompController::GravityCompController() 
     : loop_count_(0)
-	
 {
     // Constructor implementation (if needed)
 }
@@ -130,14 +129,17 @@ bool GravityCompController::init(hardware_interface::EffortJointInterface* hw, r
         }
     }
 
-	//subscriber from the key command
-	motion_command_sub_ = n.subscribe("/motion_command", 1, &GravityCompController::motionCommandCB, this);
+    // Subscriber for motion commands
+    motion_command_sub_ = n.subscribe("/motion_command", 1, &GravityCompController::motionCommandCB, this);
+    
+    // Initialize command buffer with positions and velocities only
     commands_buffer_.initRT(std::vector<double>(2 * n_joints_, 0.0));  // Initialize with zeros
 
-
-    // Command subscriber
-    commands_buffer_.writeFromNonRT(std::vector<double>(n_joints_, 0.0));
-    command_sub_ = n.subscribe<std_msgs::Float64MultiArray>("command", 1, &GravityCompController::commandCB, this);
+    // Additional command subscriber (if needed)
+    // This part seems redundant as you already have motion_command_sub_
+    // If 'command' is a different topic, handle accordingly
+    // commands_buffer_.writeFromNonRT(std::vector<double>(n_joints_, 0.0));
+    // command_sub_ = n.subscribe<std_msgs::Float64MultiArray>("command", 1, &GravityCompController::commandCB, this);
 
     // Start realtime state publisher
     controller_state_pub_.reset(
@@ -164,9 +166,8 @@ bool GravityCompController::init(hardware_interface::EffortJointInterface* hw, r
 
 void GravityCompController::motionCommandCB(const std_msgs::Float64MultiArrayConstPtr& msg) {
     // Check if the message contains both positions and velocities for all joints
-    if (msg->data.size() != 2 * n_joints_) {
-        ROS_ERROR("Expected %u positions and velocities, but got %u!", 2 * n_joints_, (unsigned int)msg->data.size());
-
+    if (msg->data.size() < 2 * n_joints_) {
+        ROS_ERROR("Expected at least %u positions and velocities, but got %u!", 2 * n_joints_, (unsigned int)msg->data.size());
         return;
     }
 
@@ -175,12 +176,17 @@ void GravityCompController::motionCommandCB(const std_msgs::Float64MultiArrayCon
 
     // Extract positions and velocities
     for (size_t i = 0; i < n_joints_; i++) {
-        new_commands[i] = msg->data[i];               // Position
+        new_commands[i] = msg->data[i];                       // Position
         new_commands[i + n_joints_] = msg->data[i + n_joints_]; // Velocity
     }
 
     // Write the new commands into the real-time buffer
     commands_buffer_.writeFromNonRT(new_commands);  // Use the buffer for thread-safe communication
+
+    // Optionally, log if extra data is received
+    if (msg->data.size() > 2 * n_joints_) {
+        ROS_WARN("Received extra data (%lu elements) in motion_command message. Ignoring accelerations.", msg->data.size() - 2 * n_joints_);
+    }
 }
 
 void GravityCompController::starting(const ros::Time& time) {
@@ -199,8 +205,6 @@ void GravityCompController::starting(const ros::Time& time) {
 }
 
 
-
- 
 
 void GravityCompController::commandCB(const std_msgs::Float64MultiArrayConstPtr& msg)
 {
@@ -269,7 +273,7 @@ void GravityCompController::update(const ros::Time& time, const ros::Duration& p
         // Compute total torque command:
         tau_cmd_(i) = G_(i) + tau_fric_(i);  // Start with gravity compensation and add friction compensation
 
-        
+
         // Add the PID control effort based on the position and velocity errors
         tau_cmd_(i) += pids_[i].computeCommand(q_error_(i), q_error_dot_(i), period);
 

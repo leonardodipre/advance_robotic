@@ -11,6 +11,11 @@ custom_angles = [0] * 6  # Default custom angles for all 6 joints
 current_positions = [0] * 6  # Store current joint positions
 target_positions = [0] * 6  # Target positions for linear motion
 
+# For acceleration calculations in linear motion
+previous_positions = [0] * 6
+previous_time = None
+desired_accelerations = [0] * 6
+
 def print_menu():
     rospy.loginfo("\nMenu:")
     rospy.loginfo("1 - Sinusoidal Motion")
@@ -19,8 +24,6 @@ def print_menu():
     rospy.loginfo("4 - Fixed Motion (default)")
     rospy.loginfo("5 - Custom Angle Motion")
     rospy.loginfo("6 - Exit")
-   
-
 
 def get_motion_choice():
     choice = input("Enter your choice (1-6): ")
@@ -36,50 +39,61 @@ def get_motion_choice():
         return None
 
 def sinusoidal_motion(t):
-    position = [45 * math.radians(math.sin(math.pi / 2 * t))] * 6
-    velocity = [45 * math.radians(math.pi / 2 * math.cos(math.pi / 2 * t))] * 6
-    return position, velocity
+    position = [math.radians(45 * math.sin(math.pi / 2 * t))] * 6
+    velocity = [math.radians(45 * (math.pi / 2) * math.cos(math.pi / 2 * t))] * 6
+    acceleration = [math.radians(-45 * (math.pi / 2)**2 * math.sin(math.pi / 2 * t))] * 6
+    return position, velocity, acceleration
 
 def circular_motion(t):
-    position = [math.sin(t)] * 6  # Example circular motion
-    velocity = [math.cos(t)] * 6
-    return position, velocity
+    # Example: Circular motion in joint space
+    position = [math.radians(45 * math.sin(t))] * 6
+    velocity = [math.radians(45 * math.cos(t))] * 6
+    acceleration = [math.radians(-45 * math.sin(t))] * 6
+    return position, velocity, acceleration
 
-def linear_transition(current_position, target_position, t):
-    if not hasattr(linear_transition, 'prev_time'):
-        linear_transition.prev_time = t
-        linear_transition.tau = 0
+def linear_transition(current_position, target_position, t, dt):
+    # Simple linear interpolation with constant acceleration
+    # Assuming desired velocity is constant for simplicity
+    velocity = 0.1  # rad/s
+    position = []
+    velocity_cmd = []
+    acceleration = []
+    for i in range(6):
+        # Update position
+        pos = current_position[i] + velocity * dt
+        # Clamp to target
+        if (velocity > 0 and pos > target_position[i]) or (velocity < 0 and pos < target_position[i]):
+            pos = target_position[i]
+            vel = 0
+            acc = 0
+        else:
+            vel = velocity
+            acc = 0  # No acceleration
+        position.append(pos)
+        velocity_cmd.append(vel)
+        acceleration.append(acc)
+    return position, velocity_cmd, acceleration
 
-    v_tau = 0.1  # Controls how fast the robot moves from start to target positions
-    dt = t - linear_transition.prev_time
-    linear_transition.prev_time = t
-    linear_transition.tau += dt * v_tau
-
-    if linear_transition.tau >= 1:
-        linear_transition.tau = 1  # Cap tau at 1 to ensure it finishes correctly
-
-    q_d = [(1 - linear_transition.tau) * current_position[i] + linear_transition.tau * target_position[i] for i in range(6)]
-    q_dot_d = [v_tau * (target_position[i] - current_position[i]) for i in range(6)]
-    return q_d, q_dot_d
-
-def straight_line_motion(t):
-    global current_positions, target_positions
-    return linear_transition(current_positions, target_positions, t)
+def straight_line_motion(t, dt):
+    global current_positions, target_positions, previous_positions, desired_accelerations
+    return linear_transition(current_positions, target_positions, t, dt)
 
 def fixed_motion():
-    position = [0.1, -1, -0.5, 0.0, 1, -0.1]
+    position = [math.radians(angle) for angle in [5.73, -57.3, -28.65, 0.0, 57.3, -5.73]]
     velocity = [0] * 6
-    return position, velocity
+    acceleration = [0] * 6
+    return position, velocity, acceleration
 
 def custom_angle_motion():
     global custom_angles
-    position = custom_angles
+    position = [math.radians(angle) for angle in custom_angles]
     velocity = [0] * 6  # No velocity for custom angles
-    return position, velocity
+    acceleration = [0] * 6  # No acceleration
+    return position, velocity, acceleration
 
 def get_custom_angles():
     global custom_angles
-    rospy.loginfo("Enter custom angles for each joint (6 values)")
+    rospy.loginfo("Enter custom angles for each joint (6 values in degrees)")
     for i in range(6):
         while True:
             try:
@@ -91,7 +105,7 @@ def get_custom_angles():
 
 def get_target_positions():
     global target_positions
-    rospy.loginfo("Enter target positions for linear motion (6 values) in degree")
+    rospy.loginfo("Enter target positions for linear motion (6 values in degrees)")
     for i in range(6):
         while True:
             try:
@@ -101,36 +115,38 @@ def get_target_positions():
             except ValueError:
                 rospy.loginfo("Invalid input. Please enter a valid number.")
 
-def publish_motion(pub, motion_type, t):
+def publish_motion(pub, motion_type, t, dt):
     global current_positions
     msg = Float64MultiArray()
-    positions, velocities = [], []
+    positions, velocities, accelerations = [], [], []
     
     if motion_type == 1:  # Sinusoidal
-        positions, velocities = sinusoidal_motion(t)
+        positions, velocities, accelerations = sinusoidal_motion(t)
     elif motion_type == 2:  # Circular
-        positions, velocities = circular_motion(t)
+        positions, velocities, accelerations = circular_motion(t)
     elif motion_type == 3:  # Linear
-        positions, velocities = straight_line_motion(t)
+        positions, velocities, accelerations = straight_line_motion(t, dt)
     elif motion_type == 4:  # Fixed position
-        positions, velocities = fixed_motion()
+        positions, velocities, accelerations = fixed_motion()
     elif motion_type == 5:  # Custom angle position
-        positions, velocities = custom_angle_motion()
+        positions, velocities, accelerations = custom_angle_motion()
     
     # Update current positions directly after calculation
     current_positions = positions
-
-    msg.data = positions + velocities
+    
+    # Combine positions, velocities, and accelerations
+    msg.data = positions + velocities + accelerations
     pub.publish(msg)
 
 def publisher_thread(pub):
     global current_motion
     t = 0
+    dt = 0.1  # Time step in seconds
     rate = rospy.Rate(10)  # 10 Hz
 
     while not rospy.is_shutdown():
-        publish_motion(pub, current_motion, t)
-        t += 0.1  # Increment time
+        publish_motion(pub, current_motion, t, dt)
+        t += dt
         rate.sleep()
 
 def menu_thread():
