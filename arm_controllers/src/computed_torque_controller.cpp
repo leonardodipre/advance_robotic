@@ -13,12 +13,18 @@
 #include <kdl/kdl.hpp>
 #include <kdl/chain.hpp>
 #include <kdl_parser/kdl_parser.hpp>
-#include <kdl/chaindynparam.hpp> // Inverse dynamics
+#include <kdl/chaindynparam.hpp>              // Inverse dynamics
+#include <kdl/chainjnttojacsolver.hpp>        // Jacobian solver
+#include <kdl/chainfksolverpos_recursive.hpp> // Forward kinematics
 
 #include <boost/scoped_ptr.hpp>
 #include <boost/lexical_cast.hpp>
 
 #include <realtime_tools/realtime_buffer.h>
+
+#include <Eigen/Dense>
+#include <Eigen/SVD>
+#include <limits>
 
 #define PI 3.141592
 #define D2R PI / 180.0
@@ -184,13 +190,19 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             ROS_INFO("Got kdl chain");
         }
 
-        // 4.3 inverse dynamics solver initialization
+        // 4.3 Inverse dynamics solver initialization
         gravity_ = KDL::Vector::Zero();
         gravity_(2) = -9.81;
 
         id_solver_.reset(new KDL::ChainDynParam(kdl_chain_, gravity_));
 
-        // ********* 5. Initialize variables *********
+        // 4.4 Forward kinematics solver initialization
+        fk_pos_solver_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_));
+
+        // 4.5 Jacobian solver initialization
+        jnt_to_jac_solver_.reset(new KDL::ChainJntToJacSolver(kdl_chain_));
+
+        // 5. ********* Initialize variables *********
         // 5.1 Vector initialization
         tau_d_.data = Eigen::VectorXd::Zero(n_joints_);
 
@@ -206,20 +218,41 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         e_dot_.data = Eigen::VectorXd::Zero(n_joints_);
         e_int_.data = Eigen::VectorXd::Zero(n_joints_);
 
+        // Resize joint arrays for velocity control
+        q_cmd_dot.resize(n_joints_);
+        e_cmd.resize(n_joints_);
+        q_cmd_dot.data = Eigen::VectorXd::Zero(n_joints_);
+        e_cmd.data = Eigen::VectorXd::Zero(n_joints_);
+
         // 5.2 Matrix initialization
         M_.resize(kdl_chain_.getNrOfJoints());
         C_.resize(kdl_chain_.getNrOfJoints());
         G_.resize(kdl_chain_.getNrOfJoints());
 
+        // Initialize KDL Solvers
+        J_.resize(kdl_chain_.getNrOfJoints());
+        Jd_.resize(kdl_chain_.getNrOfJoints());
+
+        // Resize vectors for task-space variables
+        xdot_.resize(6);
+        xd_dot_.resize(6);
+        xd_dot_desired.resize(6);
+        ex_.resize(6);
+        Kp_task_.resize(6);
+        qd_dot_task.resize(n_joints_);
+
+        // Initialize task-space proportional gains (tune these values as needed)
+        Kp_task_ << 1.0, 1.0, 1.0, 0.5, 0.5, 0.5;
+
         // ********* 6. ROS commands *********
-        // 6.1 publisher
+        // 6.1 Publisher
         pub_qd_ = n.advertise<std_msgs::Float64MultiArray>("qd", 1000);
         pub_q_ = n.advertise<std_msgs::Float64MultiArray>("q", 1000);
         pub_e_ = n.advertise<std_msgs::Float64MultiArray>("e", 1000);
 
         pub_SaveData_ = n.advertise<std_msgs::Float64MultiArray>("SaveData", 1000);
 
-        // 6.2 subscriber
+        // 6.2 Subscriber
         sub_command_ = n.subscribe("/motion_command", 1000, &Computed_Torque_Controller::commandCB, this);
 
         // Initialize the command buffer with zeros
@@ -235,8 +268,6 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         // Subscribe to the control mode topic
         sub_control_mode_ = n.subscribe("/control_mode", 10, &Computed_Torque_Controller::controlModeCB, this);
 
-      
-       
         return true;
     }
 
@@ -268,7 +299,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     void controlModeCB(const std_msgs::Int32::ConstPtr &msg)
     {
         int mode = msg->data;
-        if (mode >= 1 && mode <= 4)
+        if (mode >= 1 && mode <= 5)
         {
             control_mode_buffer_.writeFromNonRT(mode);
         }
@@ -287,11 +318,11 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     void update(const ros::Time &time, const ros::Duration &period)
     {
         // ********* 0. Get states from gazebo *********
-        // 0.1 sampling time
+        // 0.1 Sampling time
         double dt = period.toSec();
         t = t + dt;
 
-        // 0.2 joint state
+        // 0.2 Joint state
         for (int i = 0; i < n_joints_; i++)
         {
             q_(i) = joints_[i].getPosition();
@@ -299,58 +330,109 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         }
 
         // ********* 1. Desired Trajectory in Joint Space *********
-
         // Retrieve the latest commands
         Commands cmd = *(command_buffer_.readFromRT());
         qd_.data = cmd.qd.data;
         qd_dot_.data = cmd.qd_dot.data;
         qd_ddot_.data = cmd.qd_ddot.data;
 
-        // ********* 2. Motion Controller in Joint Space*********
-        // *** 2.1 Error Definition in Joint Space ***
-        e_.data = qd_.data - q_.data;
-        e_dot_.data = qd_dot_.data - qdot_.data;
-
-        // *** 2.2 Compute model (M, C, G) ***
-        id_solver_->JntToMass(q_, M_);
-        id_solver_->JntToGravity(q_, G_);
-
+        // ********* 2. Motion Controller *********
         // Get the control mode
         int control_mode = *(control_mode_buffer_.readFromRT());
 
-        // *** 2.3 Apply Torque Command to Actuator ***
+        // Compute model (M, G)
+        id_solver_->JntToMass(q_, M_);
+        id_solver_->JntToGravity(q_, G_);
+
         switch (control_mode)
         {
             case 1:
-                // Only position PD
+                // *** Position PD Control ***
+                e_.data = qd_.data - q_.data;
                 tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data)) + G_.data;
                 break;
             case 2:
-                // Position plus velocity PD
+                // *** Position and Velocity PD Control ***
+                e_.data = qd_.data - q_.data;
+                e_dot_.data = qd_dot_.data - qdot_.data;
                 tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data;
                 break;
             case 3:
-                // PID control with integral term
+                // *** PID Control with Integral Term ***
+                e_.data = qd_.data - q_.data;
+                e_dot_.data = qd_dot_.data - qdot_.data;
                 e_int_.data += e_.data * dt;
                 tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Ki_.data.cwiseProduct(e_int_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data;
                 break;
             case 4:
+                // *** Velocity Controller in Joint Space ***
+                e_.data = qd_.data - q_.data;
+                q_cmd_dot.data = qd_dot_.data + Kp_.data.cwiseProduct(e_.data);
+                e_cmd.data = q_cmd_dot.data - qdot_.data;
+                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data;
+                break;
+            case 5:
             {
-                // Declare q_cmd_dot before using it
+                // *** Kinematic Controller in Task Space using Velocity Controller ***
+                // Compute current end-effector pose x_
+                fk_pos_solver_->JntToCart(q_, x_);
+
+                // Compute Jacobian at current q_
+                jnt_to_jac_solver_->JntToJac(q_, J_);
+
+                // Compute current end-effector velocity xdot_
+                xdot_ = J_.data * qdot_.data;
+
+                // Compute desired end-effector pose xd_frame_
+                fk_pos_solver_->JntToCart(qd_, xd_frame_);
+
+                // Compute Jacobian at desired qd_
+                jnt_to_jac_solver_->JntToJac(qd_, Jd_);
+
+                // Compute desired end-effector velocity xd_dot_
+                xd_dot_ = Jd_.data * qd_dot_.data;
+
+                // Compute task-space position error ex_ = xd_ - x_
+                ex_temp_ = KDL::diff(x_, xd_frame_);
+                ex_(0) = ex_temp_.vel(0);
+                ex_(1) = ex_temp_.vel(1);
+                ex_(2) = ex_temp_.vel(2);
+                ex_(3) = ex_temp_.rot(0);
+                ex_(4) = ex_temp_.rot(1);
+                ex_(5) = ex_temp_.rot(2);
+
+                // Compute desired task-space velocity xd_dot_desired
+                xd_dot_desired = xd_dot_ + Kp_task_.cwiseProduct(ex_);
+
+                // Compute pseudoinverse of current Jacobian J_
+                pseudo_inverse(J_.data, J_pinv);
+
+                // Compute desired joint velocities from task-space velocities
+                qd_dot_task = J_pinv * xd_dot_desired;
+
+                // Update qd_dot_.data
+                qd_dot_.data = qd_dot_task;
+
+                // Compute joint position error e_.data = qd_.data - q_.data
+                e_.data = qd_.data - q_.data;
+
+                // Compute desired joint velocities including position error
                 q_cmd_dot.data = qd_dot_.data + Kp_.data.cwiseProduct(e_.data);
 
-                e_cmd .data= q_cmd_dot.data - qdot_.data;
+                // Compute velocity error e_cmd.data = q_cmd_dot.data - qdot_.data
+                e_cmd.data = q_cmd_dot.data - qdot_.data;
 
-           
-                tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_cmd.data)) + G_.data;
-               
+                // Compute torque command
+                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data) + Kp_.data.cwiseProduct(e_.data)) + G_.data;
+
                 break;
             }
             default:
                 ROS_WARN("Invalid control mode selected: %d", control_mode);
-            break;
+                break;
         }
 
+        // Apply torque commands
         for (int i = 0; i < n_joints_; i++)
         {
             joints_[i].setCommand(tau_d_(i));
@@ -529,6 +611,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
     // KDL solver
     boost::scoped_ptr<KDL::ChainDynParam> id_solver_;
+    boost::scoped_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_;
+    boost::scoped_ptr<KDL::ChainJntToJacSolver> jnt_to_jac_solver_;
 
     // Joint Space State
     KDL::JntArray qd_, qd_dot_, qd_ddot_, q_cmd_dot;
@@ -536,14 +620,25 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     KDL::JntArray q_, qdot_;
     KDL::JntArray e_, e_dot_, e_int_, e_cmd;
 
+    // Task Space State
+    KDL::Frame x_;              // Current end-effector pose
+    KDL::Frame xd_frame_;       // Desired end-effector pose
+    KDL::Jacobian J_;           // Jacobian at current q_
+    KDL::Jacobian Jd_;          // Jacobian at desired qd_
+    Eigen::VectorXd xdot_;      // Current end-effector velocity
+    Eigen::VectorXd xd_dot_;    // Desired end-effector velocity
+    Eigen::VectorXd xd_dot_desired; // Desired task-space velocity with feedback
+    KDL::Twist ex_temp_;        // Task-space position error as KDL::Twist
+    Eigen::VectorXd ex_;        // Task-space position error as Eigen vector
+    Eigen::VectorXd Kp_task_;   // Task-space proportional gains
+    Eigen::MatrixXd J_pinv;     // Pseudoinverse of the Jacobian
+    Eigen::VectorXd qd_dot_task; // Desired joint velocities from task-space mapping
+
     // Input
     KDL::JntArray tau_d_;
 
     // Gains
     KDL::JntArray Kp_, Ki_, Kd_;
-
-   
- 
 
     // Save the data
     double SaveData_[SaveDataMax];
@@ -563,6 +658,26 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     // Control mode
     realtime_tools::RealtimeBuffer<int> control_mode_buffer_;
     ros::Subscriber sub_control_mode_;
+
+    // Pseudoinverse function
+    void pseudo_inverse(const Eigen::MatrixXd& a, Eigen::MatrixXd& result, double epsilon = std::numeric_limits<double>::epsilon())
+    {
+        Eigen::JacobiSVD<Eigen::MatrixXd> svd(a, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        double tolerance = epsilon * std::max(a.cols(), a.rows()) * svd.singularValues().array().abs().maxCoeff();
+        Eigen::VectorXd singularValues_inv = svd.singularValues();
+        for (long i = 0; i < singularValues_inv.size(); ++i)
+        {
+            if (singularValues_inv(i) > tolerance)
+            {
+                singularValues_inv(i) = 1.0 / singularValues_inv(i);
+            }
+            else
+            {
+                singularValues_inv(i) = 0.0;
+            }
+        }
+        result = svd.matrixV() * singularValues_inv.asDiagonal() * svd.matrixU().transpose();
+    }
 };
 }; // namespace arm_controllers
 
