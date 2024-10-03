@@ -235,6 +235,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         // Subscribe to the control mode topic
         sub_control_mode_ = n.subscribe("/control_mode", 10, &Computed_Torque_Controller::controlModeCB, this);
 
+      
+       
         return true;
     }
 
@@ -333,12 +335,20 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Ki_.data.cwiseProduct(e_int_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data;
                 break;
             case 4:
-                
+            {
+                // Declare q_cmd_dot before using it
+                q_cmd_dot.data = qd_dot_.data + Kp_.data.cwiseProduct(e_.data);
+
+                e_cmd .data= q_cmd_dot.data - qdot_.data;
+
+           
+                tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_cmd.data)) + G_.data;
+               
                 break;
+            }
             default:
-                ROS_WARN_THROTTLE(1.0, "Invalid control mode: %d", control_mode);
-                tau_d_.data.setZero();
-                break;
+                ROS_WARN("Invalid control mode selected: %d", control_mode);
+            break;
         }
 
         for (int i = 0; i < n_joints_; i++)
@@ -521,16 +531,19 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     boost::scoped_ptr<KDL::ChainDynParam> id_solver_;
 
     // Joint Space State
-    KDL::JntArray qd_, qd_dot_, qd_ddot_;
+    KDL::JntArray qd_, qd_dot_, qd_ddot_, q_cmd_dot;
     KDL::JntArray qd_old_;
     KDL::JntArray q_, qdot_;
-    KDL::JntArray e_, e_dot_, e_int_;
+    KDL::JntArray e_, e_dot_, e_int_, e_cmd;
 
     // Input
     KDL::JntArray tau_d_;
 
     // Gains
     KDL::JntArray Kp_, Ki_, Kd_;
+
+   
+ 
 
     // Save the data
     double SaveData_[SaveDataMax];

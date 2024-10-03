@@ -6,11 +6,11 @@ import threading
 def input_thread(mode_container):
     while not rospy.is_shutdown():
         try:
-            input_mode = int(input("Select control mode (1: position, 2: position + velocity, 3: PID, 4: TODO): "))
-            if 1 <= input_mode <= 4:
+            input_mode = int(input("Select control mode (1: position, 2: position + velocity, 3: PID, 4: Kineptica (Joint, space) , 5:Kinematic task space: "))
+            if 1 <= input_mode <= 5:
                 mode_container['mode'] = input_mode
             else:
-                print("Invalid mode selected. Please select a number between 1 and 4.")
+                print("Invalid mode selected. Please select a number between 1 and 5.")
         except ValueError:
             print("Invalid input. Please enter a number between 1 and 4.")
         except EOFError:
