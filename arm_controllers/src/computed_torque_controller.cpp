@@ -343,33 +343,33 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         // Compute model (M, G)
         id_solver_->JntToMass(q_, M_);
         id_solver_->JntToGravity(q_, G_);
+        id_solver_->JntToCoriolis(q_, qdot_, C_);
 
         switch (control_mode)
         {
             case 1:
                 // *** Position PD Control ***
                 e_.data = qd_.data - q_.data;
-                tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data)) + G_.data;
+                e_dot_.data = qd_dot_.data - qdot_.data;
+                tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
                 break;
             case 2:
                 // *** Position and Velocity PD Control ***
-                e_.data = qd_.data - q_.data;
+                
                 e_dot_.data = qd_dot_.data - qdot_.data;
-                tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data;
+                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
                 break;
             case 3:
-                // *** PID Control with Integral Term ***
-                e_.data = qd_.data - q_.data;
-                e_dot_.data = qd_dot_.data - qdot_.data;
-                e_int_.data += e_.data * dt;
-                tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Ki_.data.cwiseProduct(e_int_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data;
+                
                 break;
             case 4:
-                // *** Velocity Controller in Joint Space ***
+                // *** Velocity Controller in Joint Space with kinematic ***
                 e_.data = qd_.data - q_.data;
                 q_cmd_dot.data = qd_dot_.data + Kp_.data.cwiseProduct(e_.data);
+                
                 e_cmd.data = q_cmd_dot.data - qdot_.data;
-                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data;
+                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
+
                 break;
             case 5:
             {
@@ -423,7 +423,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 e_cmd.data = q_cmd_dot.data - qdot_.data;
 
                 // Compute torque command
-                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data) + Kp_.data.cwiseProduct(e_.data)) + G_.data;
+                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data) ) + G_.data + C_.data;
 
                 break;
             }
