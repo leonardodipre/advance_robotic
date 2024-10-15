@@ -81,5 +81,6 @@ catkin_install_python(PROGRAMS
   scripts/movment_publisher.py  # Added your new Python file
   scripts/controll_publisher.py
   scripts/subs.py
+  scripts/aruco_traker_topic.py 
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

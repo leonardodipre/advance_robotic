@@ -125,8 +125,12 @@ public:
     ROS_INFO_STREAM("Marker size min: " << min_marker_size << "% of image area");
     ROS_INFO_STREAM("Detection mode: " << detection_mode);
 
-    image_sub = it.subscribe("/image", 1, &ArucoSimple::image_callback, this);
-    cam_info_sub = nh.subscribe("/camera_info", 1, &ArucoSimple::cam_info_callback, this);
+    image_sub = it.subscribe("/camera/color/image_raw", 1, &ArucoSimple::image_callback, this);
+    cam_info_sub = nh.subscribe("/camera/color/camera_info", 1, &ArucoSimple::cam_info_callback, this);
+
+
+    //image_sub = it.subscribe("/image", 1, &ArucoSimple::image_callback, this);
+    //cam_info_sub = nh.subscribe("/camera_info", 1, &ArucoSimple::cam_info_callback, this);
 
     image_pub = it.advertise("result", 1);
     debug_pub = it.advertise("debug", 1);

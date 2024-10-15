@@ -1,23 +1,35 @@
 <launch>
-  <!-- World -->
-  <include file="$(find gazebo_ros)/launch/empty_world.launch"/>
-  
+  <!-- Define the controller argument with a default value -->
+  <arg name="controller" default="gravity_comp_controller" />
+
+  <!-- Set the Gazebo model path to include custom models and default Gazebo models -->
+  <env name="GAZEBO_MODEL_PATH" value="$(find elfin_gazebo)/models:$(optenv GAZEBO_MODEL_PATH)" />
+
+  <!-- Include the Gazebo empty world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch" />
+
   <!-- Robot Model -->
   <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find elfin_description)/urdf/elfin3.urdf.xacro'" />
-      
-  <node name="urdf_spawner" pkg="gazebo_ros" type="spawn_model" respawn="false" output="screen" args="-urdf -model elfin3 -param robot_description"/>
 
-  <!-- Controller: 
-      - gravity_comp_controller
-      - computed_torque_controller
-      - passivity_controller
-      - time_delay_controller
-      - computed_torque_clik_controller -->
-  <rosparam file="$(find elfin_gazebo)/config/$(arg controller).yaml" command="load"/>
+  <!-- Spawn the robot in Gazebo -->
+  <node name="urdf_spawner" pkg="gazebo_ros" type="spawn_model" respawn="false" output="screen"
+        args="-urdf -model elfin3 -param robot_description" />
 
+  <!-- Load the controller configurations from a yaml file -->
+  <rosparam file="$(find elfin_gazebo)/config/$(arg controller).yaml" command="load" />
+
+  <!-- Spawner for the controllers -->
   <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
-      output="screen" ns="/elfin" args="joint_state_controller $(arg controller)"/>
+        output="screen" ns="/elfin" args="joint_state_controller $(arg controller)" />
 
-  <!-- State publisher -->
-  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" ns="/elfin"/>
+  <!-- State Publisher -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" ns="/elfin" />
+
+  <!-- Spawn the ArUco Marker Model -->
+  <node name="spawn_marker" pkg="gazebo_ros" type="spawn_model" output="screen"
+      args="-sdf -model aruco_marker -file /root/src/elfin/elfin_gazebo/models/aruco_marker/model.sdf -x 1.0 -y 0 -z 0" />
+
+
 </launch>
+
+
