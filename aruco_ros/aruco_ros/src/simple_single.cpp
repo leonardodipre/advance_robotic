@@ -27,10 +27,10 @@
  ********************************/
 /**
  * @file simple_single.cpp
- * @author Bence Magyar
- * @date June 2012
- * @version 0.1
- * @brief ROS version of the example named "simple" in the ArUco software package.
+ * @author
+ * @date
+ * @version
+ * @brief Modified ROS version of the example to detect all ArUco markers without specifying a marker ID.
  */
 
 #include <iostream>
@@ -67,12 +67,10 @@ private:
   ros::Publisher position_pub;
   ros::Publisher marker_pub; // rviz visualization marker
   ros::Publisher pixel_pub;
-  std::string marker_frame;
   std::string camera_frame;
   std::string reference_frame;
 
   double marker_size;
-  int marker_id;
 
   ros::NodeHandle nh;
   image_transport::ImageTransport it;
@@ -86,11 +84,6 @@ public:
   ArucoSimple() :
       cam_info_received(false), nh("~"), it(nh)
   {
-
-    if (nh.hasParam("corner_refinement"))
-      ROS_WARN(
-          "Corner refinement options have been removed in ArUco 3.0.0, corner_refinement ROS parameter is deprecated");
-
     aruco::MarkerDetector::Params params = mDetector.getParameters();
     std::string thresh_method;
     switch (params.thresMethod)
@@ -128,10 +121,6 @@ public:
     image_sub = it.subscribe("/camera/color/image_raw", 1, &ArucoSimple::image_callback, this);
     cam_info_sub = nh.subscribe("/camera/color/camera_info", 1, &ArucoSimple::cam_info_callback, this);
 
-
-    //image_sub = it.subscribe("/image", 1, &ArucoSimple::image_callback, this);
-    //cam_info_sub = nh.subscribe("/camera_info", 1, &ArucoSimple::cam_info_callback, this);
-
     image_pub = it.advertise("result", 1);
     debug_pub = it.advertise("debug", 1);
     pose_pub = nh.advertise<geometry_msgs::PoseStamped>("pose", 100);
@@ -141,20 +130,17 @@ public:
     pixel_pub = nh.advertise<geometry_msgs::PointStamped>("pixel", 10);
 
     nh.param<double>("marker_size", marker_size, 0.05);
-    nh.param<int>("marker_id", marker_id, 300);
     nh.param<std::string>("reference_frame", reference_frame, "");
     nh.param<std::string>("camera_frame", camera_frame, "");
-    nh.param<std::string>("marker_frame", marker_frame, "");
     nh.param<bool>("image_is_rectified", useRectifiedImages, true);
 
-    ROS_ASSERT(camera_frame != "" && marker_frame != "");
+    ROS_ASSERT(camera_frame != "");
 
     if (reference_frame.empty())
       reference_frame = camera_frame;
 
-    ROS_INFO("ArUco node started with marker size of %f m and marker id to track: %d", marker_size, marker_id);
-    ROS_INFO("ArUco node will publish pose to TF with %s as parent and %s as child.", reference_frame.c_str(),
-             marker_frame.c_str());
+    ROS_INFO("ArUco node started with marker size of %f m", marker_size);
+    ROS_INFO("ArUco node will publish pose to TF with %s as parent.", reference_frame.c_str());
 
     dyn_rec_server.setCallback(boost::bind(&ArucoSimple::reconf_callback, this, _1, _2));
   }
@@ -211,67 +197,71 @@ public:
         markers.clear();
         // ok, let's detect
         mDetector.detect(inImage, markers, camParam, marker_size, false);
+
         // for each marker, draw info and its boundaries in the image
         for (std::size_t i = 0; i < markers.size(); ++i)
         {
-          // only publishing the selected marker
-          if (markers[i].id == marker_id)
+          // Process each detected marker
+          int marker_id = markers[i].id;
+          std::string marker_frame = "aruco_marker_" + std::to_string(marker_id);
+
+          // Print the detected marker ID
+          ROS_INFO("Detected marker ID: %d", marker_id);
+
+          tf::Transform transform = aruco_ros::arucoMarker2Tf(markers[i]);
+          tf::StampedTransform cameraToReference;
+          cameraToReference.setIdentity();
+
+          if (reference_frame != camera_frame)
           {
-            tf::Transform transform = aruco_ros::arucoMarker2Tf(markers[i]);
-            tf::StampedTransform cameraToReference;
-            cameraToReference.setIdentity();
-
-            if (reference_frame != camera_frame)
-            {
-              getTransform(reference_frame, camera_frame, cameraToReference);
-            }
-
-            transform = static_cast<tf::Transform>(cameraToReference) * static_cast<tf::Transform>(rightToLeft)
-                * transform;
-
-            tf::StampedTransform stampedTransform(transform, curr_stamp, reference_frame, marker_frame);
-            br.sendTransform(stampedTransform);
-            geometry_msgs::PoseStamped poseMsg;
-            tf::poseTFToMsg(transform, poseMsg.pose);
-            poseMsg.header.frame_id = reference_frame;
-            poseMsg.header.stamp = curr_stamp;
-            pose_pub.publish(poseMsg);
-
-            geometry_msgs::TransformStamped transformMsg;
-            tf::transformStampedTFToMsg(stampedTransform, transformMsg);
-            transform_pub.publish(transformMsg);
-
-            geometry_msgs::Vector3Stamped positionMsg;
-            positionMsg.header = transformMsg.header;
-            positionMsg.vector = transformMsg.transform.translation;
-            position_pub.publish(positionMsg);
-
-            geometry_msgs::PointStamped pixelMsg;
-            pixelMsg.header = transformMsg.header;
-            pixelMsg.point.x = markers[i].getCenter().x;
-            pixelMsg.point.y = markers[i].getCenter().y;
-            pixelMsg.point.z = 0;
-            pixel_pub.publish(pixelMsg);
-
-            // publish rviz marker representing the ArUco marker patch
-            visualization_msgs::Marker visMarker;
-            visMarker.header = transformMsg.header;
-            visMarker.id = 1;
-            visMarker.type = visualization_msgs::Marker::CUBE;
-            visMarker.action = visualization_msgs::Marker::ADD;
-            visMarker.pose = poseMsg.pose;
-            visMarker.scale.x = marker_size;
-            visMarker.scale.y = marker_size;
-            visMarker.scale.z = 0.001;
-            visMarker.color.r = 1.0;
-            visMarker.color.g = 0;
-            visMarker.color.b = 0;
-            visMarker.color.a = 1.0;
-            visMarker.lifetime = ros::Duration(3.0);
-            marker_pub.publish(visMarker);
-
+            getTransform(reference_frame, camera_frame, cameraToReference);
           }
-          // but drawing all the detected markers
+
+          transform = static_cast<tf::Transform>(cameraToReference) * static_cast<tf::Transform>(rightToLeft)
+              * transform;
+
+          tf::StampedTransform stampedTransform(transform, curr_stamp, reference_frame, marker_frame);
+          br.sendTransform(stampedTransform);
+          geometry_msgs::PoseStamped poseMsg;
+          tf::poseTFToMsg(transform, poseMsg.pose);
+          poseMsg.header.frame_id = reference_frame;
+          poseMsg.header.stamp = curr_stamp;
+          pose_pub.publish(poseMsg);
+
+          geometry_msgs::TransformStamped transformMsg;
+          tf::transformStampedTFToMsg(stampedTransform, transformMsg);
+          transform_pub.publish(transformMsg);
+
+          geometry_msgs::Vector3Stamped positionMsg;
+          positionMsg.header = transformMsg.header;
+          positionMsg.vector = transformMsg.transform.translation;
+          position_pub.publish(positionMsg);
+
+          geometry_msgs::PointStamped pixelMsg;
+          pixelMsg.header = transformMsg.header;
+          pixelMsg.point.x = markers[i].getCenter().x;
+          pixelMsg.point.y = markers[i].getCenter().y;
+          pixelMsg.point.z = 0;
+          pixel_pub.publish(pixelMsg);
+
+          // publish rviz marker representing the ArUco marker patch
+          visualization_msgs::Marker visMarker;
+          visMarker.header = transformMsg.header;
+          visMarker.id = marker_id; // Use marker ID for unique IDs
+          visMarker.type = visualization_msgs::Marker::CUBE;
+          visMarker.action = visualization_msgs::Marker::ADD;
+          visMarker.pose = poseMsg.pose;
+          visMarker.scale.x = marker_size;
+          visMarker.scale.y = marker_size;
+          visMarker.scale.z = 0.001;
+          visMarker.color.r = 1.0;
+          visMarker.color.g = 0;
+          visMarker.color.b = 0;
+          visMarker.color.a = 1.0;
+          visMarker.lifetime = ros::Duration(3.0);
+          marker_pub.publish(visMarker);
+
+          // Drawing all the detected markers
           markers[i].draw(inImage, cv::Scalar(0, 0, 255), 2);
         }
 

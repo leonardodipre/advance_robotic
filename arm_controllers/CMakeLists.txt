@@ -82,5 +82,6 @@ catkin_install_python(PROGRAMS
   scripts/controll_publisher.py
   scripts/subs.py
   scripts/aruco_traker_topic.py 
+  scripts/arunco_vs.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
