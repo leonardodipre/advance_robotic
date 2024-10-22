@@ -4,6 +4,9 @@ import rospy
 from std_msgs.msg import Float64MultiArray
 import math
 import threading
+import numpy as np
+from math import sin, cos
+
 
 # Global variables
 current_motion = 4  # Default to fixed motion at startup
@@ -11,6 +14,8 @@ custom_angles = [0] * 6  # Default custom angles for all 6 joints
 current_positions = [0] * 6  # Store current joint positions
 target_positions = [0] * 6  # Target positions for linear motion
 
+task_coords = [0]*6
+task_vel = [0]*6
 # For the new linear loop motion
 A_positions = [0] * 6  # Starting joint angles for position A
 B_positions = [0] * 6  # Ending joint angles for position B
@@ -18,11 +23,12 @@ B_positions = [0] * 6  # Ending joint angles for position B
 def print_menu():
     rospy.loginfo("\nMenu:")
     rospy.loginfo("1 - Sinusoidal Motion")
-    rospy.loginfo("2 - Circular Motion")
+    
     rospy.loginfo("3 - Linear Motion")
     rospy.loginfo("4 - Fixed Motion (default)")
-    rospy.loginfo("5 - Custom Angle Motion")
-    rospy.loginfo("6 - Linear Loop Motion between A and B")
+    rospy.loginfo("5 - Task space ")
+    
+    rospy.loginfo("6 - Linear Loop Motion between A and B (joint)")
     rospy.loginfo("7 - Exit")
 
 def get_motion_choice():
@@ -42,14 +48,14 @@ def sinusoidal_motion(t):
     position = [math.radians(45 * math.sin(math.pi / 2 * t))] * 6
     velocity = [math.radians(45 * (math.pi / 2) * math.cos(math.pi / 2 * t))] * 6
     acceleration = [math.radians(-45 * (math.pi / 2)**2 * math.sin(math.pi / 2 * t))] * 6
-    return position, velocity, acceleration
+    return position, velocity, acceleration , task_coords, task_vel
 
 def circular_motion(t):
     # Example: Circular motion in joint space
     position = [math.radians(45 * math.sin(t))] * 6
     velocity = [math.radians(45 * math.cos(t))] * 6
     acceleration = [math.radians(-45 * math.sin(t))] * 6
-    return position, velocity, acceleration
+    return position, velocity, acceleration, task_coords, task_vel
 
 def linear_transition(current_position, target_position, t, dt):
     # Simple linear interpolation with constant velocity
@@ -71,24 +77,53 @@ def linear_transition(current_position, target_position, t, dt):
         position.append(pos)
         velocity_cmd.append(vel)
         acceleration.append(acc)
-    return position, velocity_cmd, acceleration
+    return position, velocity_cmd, acceleration , task_coords , task_vel
 
 def straight_line_motion(t, dt):
     global current_positions, target_positions
     return linear_transition(current_positions, target_positions, t, dt)
 
 def fixed_motion():
-    position = [math.radians(angle) for angle in [5.73, -57.3, -28.65, 0.0, 57.3, -5.73]]
+    position = [math.radians(angle) for angle in [0.0, -57.3, -35.00, 0.0, 100.0, -60.73]]
     velocity = [0] * 6
     acceleration = [0] * 6
-    return position, velocity, acceleration
+    return position, velocity, acceleration , task_coords, task_vel
 
-def custom_angle_motion():
-    global custom_angles
-    position = [math.radians(angle) for angle in custom_angles]
-    velocity = [0] * 6  # No velocity for custom angles
-    acceleration = [0] * 6  # No acceleration
-    return position, velocity, acceleration
+def task_space_function(t, dt):
+    # Trajectory parameters
+    A = 0.2          # Amplitude (m)
+    omega = 0.1      # Angular frequency (rad/s)
+    height = 1.0     # Height above the ground (m)
+
+    
+    x = A * np.sin(omega * t)
+    y = A * np.sin(omega * t) * np.cos(omega * t)
+    z = height
+
+    # Velocities
+    xd = A * omega * np.cos(omega * t)
+    yd = A * omega * (np.cos(2 * omega * t) - np.sin(omega * t)**2)
+    zd = 0.0
+
+    # Limit velocities
+    max_velocity = 0.5  # m/s
+    velocity_magnitude = np.sqrt(xd**2 + yd**2)
+    if velocity_magnitude > max_velocity:
+        scale = max_velocity / velocity_magnitude
+        xd *= scale
+        yd *= scale
+
+    # Task space coordinates and velocities
+    task_coords = [x, y, z, 0.0, 0.0, 0.0]
+    task_vel = [xd, yd, zd, 0.0, 0.0, 0.0]
+
+    # Joint space placeholders
+    position = [0.0] * 6
+    velocity = [0.0] * 6
+    acceleration = [0.0] * 6
+
+    return position, velocity, acceleration, task_coords, task_vel
+
 
 def get_custom_angles():
     global custom_angles
@@ -160,7 +195,7 @@ def linear_loop_motion(t):
         positions.append(pos)
         velocities.append(vel)
         accelerations.append(acc)
-    return positions, velocities, accelerations
+    return positions, velocities, accelerations , task_coords, task_vel
 
 def publish_motion(pub, motion_type, t, dt):
     global current_positions
@@ -168,23 +203,23 @@ def publish_motion(pub, motion_type, t, dt):
     positions, velocities, accelerations = [], [], []
 
     if motion_type == 1:  # Sinusoidal
-        positions, velocities, accelerations = sinusoidal_motion(t)
+        positions, velocities, accelerations , task_coords, task_vel= sinusoidal_motion(t)
     elif motion_type == 2:  # Circular
-        positions, velocities, accelerations = circular_motion(t)
+        positions, velocities, accelerations , task_coords, task_vel= circular_motion(t)
     elif motion_type == 3:  # Linear
-        positions, velocities, accelerations = straight_line_motion(t, dt)
+        positions, velocities, accelerations , task_coords, task_vel= straight_line_motion(t, dt)
     elif motion_type == 4:  # Fixed position
-        positions, velocities, accelerations = fixed_motion()
-    elif motion_type == 5:  # Custom angle position
-        positions, velocities, accelerations = custom_angle_motion()
+        positions, velocities, accelerations , task_coords, task_vel= fixed_motion()
+    elif motion_type == 5:  # 
+        positions, velocities, accelerations , task_coords, task_vel= task_space_function(t, dt)
     elif motion_type == 6:  # Linear Loop Motion
-        positions, velocities, accelerations = linear_loop_motion(t)
+        positions, velocities, accelerations , task_coords, task_vel= linear_loop_motion(t)
 
     # Update current positions directly after calculation
     current_positions = positions
 
     # Combine positions, velocities, and accelerations
-    msg.data = positions + velocities + accelerations
+    msg.data = positions + velocities + accelerations + task_coords + task_vel
     pub.publish(msg)
 
 def publisher_thread(pub):
@@ -209,10 +244,6 @@ def menu_thread():
                 rospy.loginfo("Exiting...")
                 rospy.signal_shutdown("User requested exit.")
                 break
-            elif choice == 5:
-                get_custom_angles()
-                current_motion = choice
-                rospy.loginfo("Custom angles set and motion changed to Custom Angle Motion")
             elif choice == 3:
                 get_target_positions()
                 current_motion = choice
