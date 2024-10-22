@@ -1,78 +1,70 @@
 #!/usr/bin/env python
 
 import rospy
-from geometry_msgs.msg import PoseStamped, TransformStamped, Vector3Stamped, PointStamped
-from visualization_msgs.msg import Marker
+from geometry_msgs.msg import PoseStamped, TransformStamped
+from std_msgs.msg import Float32MultiArray
+import message_filters
 
-def pose_callback(msg):
-    rospy.loginfo("----- PoseStamped Message -----")
-    rospy.loginfo("Frame ID: %s", msg.header.frame_id)
-    rospy.loginfo("Timestamp: %s", msg.header.stamp)
-    rospy.loginfo("Position -> x: %.3f, y: %.3f, z: %.3f", 
-                  msg.pose.position.x, msg.pose.position.y, msg.pose.position.z)
-    rospy.loginfo("Orientation -> x: %.3f, y: %.3f, z: %.3f, w: %.3f", 
-                  msg.pose.orientation.x, msg.pose.orientation.y, 
-                  msg.pose.orientation.z, msg.pose.orientation.w)
-    rospy.loginfo("-------------------------------\n")
+def log_header(msg_type, timestamp):
+    rospy.loginfo("\n" + "=" * 50 + f" {msg_type} " + "=" * 50)
+    rospy.loginfo(f"Timestamp: {timestamp.to_sec() if isinstance(timestamp, rospy.Time) else timestamp}")
 
-def transform_callback(msg):
-    rospy.loginfo("----- TransformStamped Message -----")
-    rospy.loginfo("Parent Frame: %s", msg.header.frame_id)
-    rospy.loginfo("Child Frame: %s", msg.child_frame_id)
-    rospy.loginfo("Timestamp: %s", msg.header.stamp)
-    rospy.loginfo("Translation -> x: %.3f, y: %.3f, z: %.3f", 
-                  msg.transform.translation.x, msg.transform.translation.y, 
-                  msg.transform.translation.z)
-    rospy.loginfo("Rotation -> x: %.3f, y: %.3f, z: %.3f, w: %.3f", 
-                  msg.transform.rotation.x, msg.transform.rotation.y, 
-                  msg.transform.rotation.z, msg.transform.rotation.w)
-    rospy.loginfo("-------------------------------------\n")
+def log_footer():
+    rospy.loginfo("=" * 120 + "\n")
 
-def position_callback(msg):
-    rospy.loginfo("----- Vector3Stamped Message -----")
-    rospy.loginfo("Frame ID: %s", msg.header.frame_id)
-    rospy.loginfo("Timestamp: %s", msg.header.stamp)
-    rospy.loginfo("Vector -> x: %.3f, y: %.3f, z: %.3f", 
-                  msg.vector.x, msg.vector.y, msg.vector.z)
-    rospy.loginfo("------------------------------------\n")
+def synchronized_callback(pose_msg, transform_msg, error_msg):
+    # Log Pose
+    log_header("Pose Update", pose_msg.header.stamp)
+    rospy.loginfo("Position: x: {0:.3f}, y: {1:.3f}, z: {2:.3f}".format(
+        pose_msg.pose.position.x, pose_msg.pose.position.y, pose_msg.pose.position.z))
+    rospy.loginfo("Orientation: x: {0:.3f}, y: {1:.3f}, z: {2:.3f}, w: {3:.3f}".format(
+        pose_msg.pose.orientation.x, pose_msg.pose.orientation.y,
+        pose_msg.pose.orientation.z, pose_msg.pose.orientation.w))
+    rospy.loginfo("Frame ID: " + pose_msg.header.frame_id)
+    log_footer()
 
-def marker_callback(msg):
-    rospy.loginfo("----- Marker Message -----")
-    rospy.loginfo("Marker ID: %d", msg.id)
-    rospy.loginfo("Namespace: %s", msg.ns)
-    rospy.loginfo("Type: %d", msg.type)
-    rospy.loginfo("Action: %d", msg.action)
-    rospy.loginfo("Position -> x: %.3f, y: %.3f, z: %.3f", 
-                  msg.pose.position.x, msg.pose.position.y, msg.pose.position.z)
-    rospy.loginfo("Orientation -> x: %.3f, y: %.3f, z: %.3f, w: %.3f", 
-                  msg.pose.orientation.x, msg.pose.orientation.y, 
-                  msg.pose.orientation.z, msg.pose.orientation.w)
-    rospy.loginfo("Scale -> x: %.3f, y: %.3f, z: %.3f", 
-                  msg.scale.x, msg.scale.y, msg.scale.z)
-    rospy.loginfo("Color -> r: %.3f, g: %.3f, b: %.3f, a: %.3f", 
-                  msg.color.r, msg.color.g, msg.color.b, msg.color.a)
-    rospy.loginfo("--------------------------------\n")
+    # Log Transform
+    log_header("Transform Update", transform_msg.header.stamp)
+    rospy.loginfo("Translation: x: {0:.3f}, y: {1:.3f}, z: {2:.3f}".format(
+        transform_msg.transform.translation.x,
+        transform_msg.transform.translation.y,
+        transform_msg.transform.translation.z))
+    rospy.loginfo("Rotation: x: {0:.3f}, y: {1:.3f}, z: {2:.3f}, w: {3:.3f}".format(
+        transform_msg.transform.rotation.x,
+        transform_msg.transform.rotation.y,
+        transform_msg.transform.rotation.z,
+        transform_msg.transform.rotation.w))
+    rospy.loginfo("Parent Frame: " + transform_msg.header.frame_id)
+    rospy.loginfo("Child Frame: " + transform_msg.child_frame_id)
+    log_footer()
 
-def pixel_callback(msg):
-    rospy.loginfo("----- PointStamped (Pixel) Message -----")
-    rospy.loginfo("Frame ID: %s", msg.header.frame_id)
-    rospy.loginfo("Timestamp: %s", msg.header.stamp)
-    rospy.loginfo("Pixel Coordinates -> x: %.1f, y: %.1f, z: %.1f", 
-                  msg.point.x, msg.point.y, msg.point.z)
-    rospy.loginfo("----------------------------------------\n")
+    # Log Pose Error
+    log_header("Pose Error Update", rospy.Time.now())
+    if len(error_msg.data) >= 3:
+        rospy.loginfo("Position Error: x: {0:.3f}, y: {1:.3f}, z: {2:.3f}".format(
+            error_msg.data[0], error_msg.data[1], error_msg.data[2]))
+    else:
+        rospy.logwarn("Pose Error message does not contain enough data.")
+    log_footer()
 
 def listener():
     rospy.init_node('aruco_listener', anonymous=True)
-    rospy.loginfo("----- Aruco Listener Node Initialized -----\n")
-
-    # Subscribers for all published topics
-    rospy.Subscriber('pose', PoseStamped, pose_callback)
-    rospy.Subscriber('transform', TransformStamped, transform_callback)
-    rospy.Subscriber('position', Vector3Stamped, position_callback)
-    rospy.Subscriber('marker', Marker, marker_callback)
-    rospy.Subscriber('pixel', PointStamped, pixel_callback)
-
-    rospy.loginfo("Subscribed to 'pose', 'transform', 'position', 'marker', and 'pixel' topics.\n")
+    
+    # Create subscribers with message_filters
+    pose_sub = message_filters.Subscriber('/pose', PoseStamped)
+    transform_sub = message_filters.Subscriber('/transform', TransformStamped)
+    error_sub = message_filters.Subscriber('/pose_error', Float32MultiArray)
+    
+    # Synchronize the topics
+    ts = message_filters.ApproximateTimeSynchronizer(
+        [pose_sub, transform_sub, error_sub], 
+        queue_size=10, 
+        slop=0.1, 
+        allow_headerless=True  # Add this parameter
+    )
+    ts.registerCallback(synchronized_callback)
+    
+    rospy.loginfo("Aruco Listener Node is running and synchronized to /pose, /transform, and /pose_error topics.")
     rospy.spin()
 
 if __name__ == '__main__':

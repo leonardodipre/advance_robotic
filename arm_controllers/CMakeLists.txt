@@ -12,7 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   dynamic_reconfigure
   roscpp
   std_msgs
-  rospy  # Added for Python script support
+  rospy
 )
 
 # Dynamic reconfigure
@@ -20,9 +20,13 @@ generate_dynamic_reconfigure_options(
   cfg/PassivityControllerParams.cfg
 )
 
-# Message generation
+# Message generation (solo ControllerJointState.msg)
 add_message_files(FILES ControllerJointState.msg)
-generate_messages(DEPENDENCIES std_msgs)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
 
 # Include directories
 include_directories(include ${Boost_INCLUDE_DIR} ${catkin_INCLUDE_DIRS})
@@ -64,7 +68,7 @@ target_link_libraries(motion_switcher_node ${catkin_LIBRARIES})
 add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_gencfg)
 add_dependencies(motion_switcher_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
-# Installation for C++ files
+# Install C++ executables and libraries
 install(TARGETS ${PROJECT_NAME} motion_switcher_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -75,10 +79,10 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
-
+# Install Python scripts
 catkin_install_python(PROGRAMS 
   scripts/joint_state_printer.py
-  scripts/movment_publisher.py  # Added your new Python file
+  scripts/movment_publisher.py  # Correggi il nome se necessario
   scripts/controll_publisher.py
   scripts/subs.py
   scripts/aruco_traker_topic.py 

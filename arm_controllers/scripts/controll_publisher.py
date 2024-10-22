@@ -6,7 +6,7 @@ import threading
 def input_thread(mode_container):
     while not rospy.is_shutdown():
         try:
-            input_mode = int(input("Select control mode (1: position, 2: position + velocity, 3: PID, 4: Kineptica (Joint, space) , 5:Kinematic task space: "))
+            input_mode = int(input("Select control mode (1: PD controler, 2:velocity controller, 3: None , 4: Kinematic Controller (Joint, space) , 5: Kinematic task space: "))
             if 1 <= input_mode <= 5:
                 mode_container['mode'] = input_mode
             else:

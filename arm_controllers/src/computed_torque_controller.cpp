@@ -354,8 +354,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
                 break;
             case 2:
-                // *** Position and Velocity PD Control ***
-                
+                // *** Velocity PD Control ***
+
                 e_dot_.data = qd_dot_.data - qdot_.data;
                 tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
                 break;
