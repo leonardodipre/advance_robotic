@@ -1,0 +1,14 @@
+
+See the immage fomr the camera in real time
+
+rosrun rqt_image_view rqt_image_view
+
+
+rosrun arm_controllers movment_publisher.py
+
+
+rosrun arm_controllers aruco_traker_topic.py
+
+
+rosrun arm_controllers arunco_vs.py
+

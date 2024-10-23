@@ -1,0 +1,41 @@
+
+
+start docker or close it 
+	sudo docker start -ai <docker id>
+
+	sudo docker stop <docker id>
+
+
+For making gazebo opne on ubunto 
+	xhost +local:rootclea
+
+Setting up surce for launching ross sim
+	source devel/setup.bash
+
+
+Build the complier
+	catkin build
+
+
+Launch simulatiojn of gazibo
+	roslaunch elfin_gazebo elfin3_empty_world.launch controller:=gravity_comp_controller
+
+OTHERS
+	sudo docker exec -it my_advanced_robotics bash
+
+
+Problems with the doker contaner IP
+	
+	This wordk
+	we put at the chenge of 192.168.0.102 the ip of this tipe
+	By doing 
+	hostname -I
+	
+	export ROS_HOSTNAME=192.168.0.102
+	
+	
+	
+rostopic pub /motion_command std_msgs/Float64MultiArray "data: [1.0]"
+rostopic pub /motion_command std_msgs/Float64MultiArray "data: [0.0]"
+rosrun arm_controllers motion_switcher_node
+

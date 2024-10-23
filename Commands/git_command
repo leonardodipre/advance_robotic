@@ -1,0 +1,34 @@
+
+Pass form one brach to the other
+	git checkout main
+	git checkout master
+	
+	
+Command to commit to the main
+	
+	git add .                   # Stage all changes for commit
+	git commit -m "some notes"  # Commit the changes with a message
+	git push origin main        # Push the committed changes to the remote `main` branch
+	
+Merge the changes in the main to master
+	Cheack we are in the mster
+		git checkout master
+		
+	Merge the main
+		git merge main
+		
+		git add <file_with_conflict>
+		git commit
+		
+		git push origin master
+
+
+Git remove untraked file
+	git clean -fd
+List the untraked file
+	git clean -fdn
+
+
+git return to previsu commit 
+	git reset --hard <commit-SHA>
+ 

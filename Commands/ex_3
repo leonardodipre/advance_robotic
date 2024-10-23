@@ -1,0 +1,46 @@
+
+_terminale [Avviare roscore ]
+	roscore
+
+1_terminale MOVMENT
+	rosrun arm_controllers movment_publisher.py
+	
+Tipologia di COMMAND 
+	rosrun arm_controllers controll_publisher.py
+	
+2_terminale [launch the sim in gazebo]
+	
+	GRAVITY
+	roslaunch elfin_gazebo elfin3_empty_world.launch controller:=gravity_comp_controller
+
+	TORQUE_CONTROLLER
+	roslaunch elfin_gazebo elfin3_empty_world.launch controller:=computed_torque_controller
+
+
+IMMAGE
+	rosrun rqt_image_view rqt_image_view
+
+	rosrun arm_controllers aruco_traker_topic.py
+	
+	rosrun arm_controllers arunco_vs.py
+
+
+
+Visual servoing
+
+INFO] [1729678641.956648, 46.592000]: Timestamp: 46524000000
+[INFO] [1729678641.974632, 46.602000]: 
+================================================== Pose Update ==================================================
+[INFO] [1729678641.987762, 46.610000]: Timestamp: 46524000000
+[INFO] [1729678642.009452, 46.619000]: Position: x: 0.010, y: -0.002, z: 0.092
+[INFO] [1729678642.028494, 46.623000]: Orientation: x: 0.872, y: 0.013, z: -0.041, w: -0.488
+[INFO] [1729678642.048923, 46.628000]: ========================================================================================================================
+
+
+[INFO] [1729678642.271327, 46.698000]: 
+================================================== Pose Error Update ==================================================
+[INFO] [1729678642.286471, 46.707000]: Timestamp: 46.698
+[INFO] [1729678642.305658, 46.712000]: Position Error: x: -0.010, y: 0.002, z: 0.408
+[INFO] [1729678642.321079, 46.722000]: ========================================================================================================================
+
+

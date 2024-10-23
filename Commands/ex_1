@@ -1,0 +1,16 @@
+Esericzio uno presetiamo un semplice menu che va a cambaire i movimenti del mio robot.
+
+_terminale [Avviare roscore ]
+	roscore
+
+1_terminale [nodo python con menu e publichser comandi]
+	rosrun arm_controllers movment_publisher.py
+
+2_terminale [launch the sim in gazebo]
+	roslaunch elfin_gazebo elfin3_empty_world.launch controller:=gravity_comp_controller
+
+3_terminale [Echo sul topic per controllare]
+	rostopic echo /motion_command
+	
+	
+

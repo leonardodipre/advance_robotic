@@ -1,0 +1,12 @@
+
+Launch the sim gazebo
+	roslaunch elfin_gazebo elfin3_empty_world.launch controller:=gravity_comp_controller
+
+
+
+Start the lister python 
+ 	rosrun arm_controllers joint_state_printer.py
+ 	rosrun arm_controllers movment_publisher.py
+ 	
+ 	rosrun Advance_robot_ex movment_publisher.py
+ 	

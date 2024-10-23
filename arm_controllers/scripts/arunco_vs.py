@@ -4,7 +4,7 @@ import cv2
 import cv2.aruco as aruco
 import numpy as np
 from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import PoseStamped, TransformStamped, Vector3Stamped
+from geometry_msgs.msg import PoseStamped, TransformStamped, Vector3Stamped, Twist
 from std_msgs.msg import Float32MultiArray
 from visualization_msgs.msg import Marker
 from cv_bridge import CvBridge, CvBridgeError
@@ -23,7 +23,7 @@ class ArucoDetectorNode:
         self.use_rectified_images = rospy.get_param('~image_is_rectified', True)
         self.publish_position = rospy.get_param('~publish_position', False)
         
-        # Desired pose parameters
+        # Desired pose parameters to point with the end-effector
         self.desired_position = np.array([
             rospy.get_param('~desired_x', 0.0),
             rospy.get_param('~desired_y', 0.0),
@@ -42,6 +42,7 @@ class ArucoDetectorNode:
         self.error_pub = rospy.Publisher('pose_error', Float32MultiArray, queue_size=10)
         self.control_pub = rospy.Publisher('control_input', Float32MultiArray, queue_size=10)
         self.marker_pub = rospy.Publisher('visualization_marker', Marker, queue_size=10)
+        self.vel_pub = rospy.Publisher('marker_velocity', Twist, queue_size=10)  # Velocity publisher
         
         # TF broadcaster
         self.br = tf2_ros.TransformBroadcaster()
@@ -60,6 +61,10 @@ class ArucoDetectorNode:
         
         # Frame counter
         self.frame_count = 0
+        
+        # For velocity calculation
+        self.prev_time = None
+        self.prev_position = None
 
         rospy.loginfo("ArucoDetectorNode initialized")
 
@@ -88,26 +93,17 @@ class ArucoDetectorNode:
         # Draw detected markers for visualization
         aruco.drawDetectedMarkers(cv_image, corners, ids)
 
-        """
-        # Save the image for debugging
-        if not os.path.exists('debug_images'):
-            os.makedirs('debug_images')
-        image_filename = 'debug_images/image_{}.jpg'.format(rospy.Time.now())
-        cv2.imwrite(image_filename, cv_image)
-        """
-
         # Process detected markers
         if ids is not None:
             for i in range(len(ids)):
                 rospy.logdebug("Marker detected: ID=%s" % ids[i])  # Detailed log for each detected marker
-                # Process marker
                 rvecs, tvecs, _objPoints = aruco.estimatePoseSingleMarkers(
                     corners, self.marker_size, self.camera_matrix, self.dist_coeffs)
+
                 self.process_marker_pose(ids[i], rvecs[i], tvecs[i], corners[i], msg.header)
         else:
             rospy.logdebug("No markers detected")  # Log when no markers are detected
 
-        # To avoid cluttering the log, consider adding a counter to control how often this message appears
         if self.frame_count % 10 == 0:
             rospy.loginfo("Processed frame %s: Markers detected: %s" % (
                 self.frame_count, len(ids) if ids is not None else 0))
@@ -137,26 +133,28 @@ class ArucoDetectorNode:
         pose.pose.orientation.w = quat[3]
         self.pose_pub.publish(pose)
 
-        # Publish TransformStamped message
-        transform = TransformStamped()
-        transform.header = pose.header
-        transform.child_frame_id = f"aruco_marker_{marker_id[0]}"
-        transform.transform.translation = pose.pose.position
-        transform.transform.rotation = pose.pose.orientation
-        self.transform_pub.publish(transform)
-        self.br.sendTransform(transform)
+        # Calculate velocity if previous position is available
+        if self.prev_position is not None:
+            current_position = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
+            current_time = rospy.Time.now().to_sec()
 
-        # **Optional:** Publish position if needed
-        if self.publish_position:
-            position = Vector3Stamped()
-            position.header = pose.header
-            position.vector.x = pose.pose.position.x
-            position.vector.y = pose.pose.position.y
-            position.vector.z = pose.pose.position.z
-            self.position_pub.publish(position)
+            # Calculate time difference
+            delta_time = current_time - self.prev_time
 
-        # Publish visualization marker
-        self.publish_marker(pose, marker_id)
+            if delta_time > 0:
+                # Calculate velocity
+                velocity = (current_position - self.prev_position) / delta_time
+
+                # Publish velocity as a Twist message
+                twist_msg = Twist()
+                twist_msg.linear.x = velocity[0]
+                twist_msg.linear.y = velocity[1]
+                twist_msg.linear.z = velocity[2]
+                self.vel_pub.publish(twist_msg)
+
+        # Update previous position and time
+        self.prev_position = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
+        self.prev_time = rospy.Time.now().to_sec()
 
         # Compute position error
         current_position = np.array([
@@ -164,28 +162,11 @@ class ArucoDetectorNode:
             pose.pose.position.y,
             pose.pose.position.z
         ])
+
+        # Calculate the error between the current position of the end-effector and the desired position
         error_position = self.desired_position - current_position
 
-        # **Optional:** Compute orientation error (if needed)
-        # Uncomment and adjust the following lines if orientation error is required
-        """
-        desired_orientation = np.array([0, 0, 0, 1])  # Example desired orientation (no rotation)
-        current_orientation = np.array([
-            pose.pose.orientation.x,
-            pose.pose.orientation.y,
-            pose.pose.orientation.z,
-            pose.pose.orientation.w
-        ])
-        # Convert quaternions to Euler angles
-        _, _, desired_yaw = euler_from_quaternion(desired_orientation)
-        _, _, current_yaw = euler_from_quaternion(current_orientation)
-        error_yaw = desired_yaw - current_yaw
-        # Wrap yaw error to [-pi, pi]
-        error_yaw = (error_yaw + np.pi) % (2 * np.pi) - np.pi
-        # Combine position and orientation errors
-        error = np.hstack((error_position, [error_yaw]))
-        """
-        # **For now, only position error is considered**
+        # Only position error is considered
         error = error_position
 
         # Publish the error
@@ -193,31 +174,6 @@ class ArucoDetectorNode:
         error_msg.data = error.tolist()
         self.error_pub.publish(error_msg)
 
-        # **Optional:** Publish control input based on the error
-        # Example: Simple Proportional Controller
-        kp = np.array([1.0, 1.0, 1.0])  # Proportional gains for x, y, z
-        control_input = kp * error_position  # P-controller
-
-        control_msg = Float32MultiArray()
-        control_msg.data = control_input.tolist()
-        self.control_pub.publish(control_msg)
-
-    def publish_marker(self, pose, marker_id):
-        marker = Marker()
-        marker.header = pose.header
-        marker.ns = "aruco_markers"
-        marker.id = marker_id[0]
-        marker.type = Marker.ARROW
-        marker.action = Marker.ADD
-        marker.pose = pose.pose
-        marker.scale.x = 0.1  # Arrow length
-        marker.scale.y = 0.02  # Arrow width
-        marker.scale.z = 0.02  # Arrow height
-        marker.color.a = 1.0
-        marker.color.r = 0.0
-        marker.color.g = 1.0
-        marker.color.b = 0.0
-        self.marker_pub.publish(marker)
 
 def main():
     try:
