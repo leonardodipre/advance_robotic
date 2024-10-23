@@ -12,5 +12,5 @@ _terminale [Avviare roscore ]
 3_terminale [Echo sul topic per controllare]
 	rostopic echo /motion_command
 	
-	proiva
+	proiva2
 
