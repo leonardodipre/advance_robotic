@@ -1,13 +1,21 @@
 <robot
   name="elfin3" xmlns:xacro="http://www.ros.org/wiki/xacro">
-  
+
+  <xacro:include filename="$(find elfin_description)/urdf/_d435.urdf.xacro"/>
+
   <xacro:include filename="$(find elfin_description)/urdf/materials.xacro" />
   
   <xacro:include filename="$(find elfin_description)/urdf/elfin_robot.gazebo" />
   
   <xacro:include filename="$(find elfin_description)/urdf/elfin_transmission.xacro" />
-  
+
+
   <xacro:property name="PI" value="3.1415926535897931"/>
+
+  <xacro:sensor_d435 name="relasense" parent="elfin_dummy_gripper">
+  <origin xyz="0.04 0 -0.05" rpy="${-PI} ${3*PI/2} 0"/>
+  </xacro:sensor_d435>
+  
   
   <link name="world"/>
   
