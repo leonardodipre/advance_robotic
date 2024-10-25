@@ -6,13 +6,13 @@ import threading
 def input_thread(mode_container):
     while not rospy.is_shutdown():
         try:
-            input_mode = int(input("Select control mode (1: position, 2: position + velocity, 3: PID, 4: Kineptica (Joint, space) , 5:Kinematic task space: "))
-            if 1 <= input_mode <= 5:
+            input_mode = int(input("Select control mode (1: PD controler, 2:velocity controller, 3: None , 4: Kinematic Controller (Joint, space) , 5: Kinematic task space: , 6: Cartesian coords  , 7: Aruco traker"))
+            if 1 <= input_mode <= 7:
                 mode_container['mode'] = input_mode
             else:
-                print("Invalid mode selected. Please select a number between 1 and 5.")
+                print("Invalid mode selected. Please select a number between 1 and 7.")
         except ValueError:
-            print("Invalid input. Please enter a number between 1 and 4.")
+            print("Invalid input. Please enter a number between 1 and 7.")
         except EOFError:
             print("\nInput stream closed. Exiting input thread.")
             break
@@ -23,7 +23,7 @@ def input_thread(mode_container):
 def main():
     rospy.init_node('controll_publisher')
     mode_pub = rospy.Publisher('/control_mode', Int32, queue_size=10)
-    rate = rospy.Rate(10)  # 10 Hz
+    rate = rospy.Rate(200)  # 10 Hz
 
     mode_container = {'mode': 1}
 

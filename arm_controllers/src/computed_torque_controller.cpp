@@ -22,6 +22,8 @@
 
 #include <realtime_tools/realtime_buffer.h>
 
+#include "arm_controllers/ArucoTracker.h"
+
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <limits>
@@ -36,8 +38,17 @@ struct Commands
     KDL::JntArray qd;
     KDL::JntArray qd_dot;
     KDL::JntArray qd_ddot;
+    Eigen::VectorXd xd;      // Desired task-space position (6 elements)
+    Eigen::VectorXd xd_dot;  // Desired task-space velocity (6 elements)
+
+    Eigen::Vector3d aruco_x;      // Now using Eigen::Vector3d
+    Eigen::Vector3d aruco_x_dot;  // Now using Eigen::Vector3d
     Commands() {}
 };
+
+
+
+
 
 namespace arm_controllers
 {
@@ -229,7 +240,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         C_.resize(kdl_chain_.getNrOfJoints());
         G_.resize(kdl_chain_.getNrOfJoints());
 
-        // Initialize KDL Solvers
+        // Inizializzazione dei Jacobiani
         J_.resize(kdl_chain_.getNrOfJoints());
         Jd_.resize(kdl_chain_.getNrOfJoints());
 
@@ -241,8 +252,19 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         Kp_task_.resize(6);
         qd_dot_task.resize(n_joints_);
 
+        aruco_x.resize(3);
+        aruco_x_dot.resize(3);
+
+        //Aruco camera KDL::Frame T_ee_camera;
+        // Initialize the fixed transformation from end-effector to camera frame
+        // Set the translation and rotation according to your setup
+        // Example: Camera translated along the z-axis of the end-effector by 0.1 meters
+        
         // Initialize task-space proportional gains (tune these values as needed)
-        Kp_task_ << 1.0, 1.0, 1.0, 0.5, 0.5, 0.5;
+        //Kp_task_ << 1.0, 1.0, 1.0, 0.5, 0.5, 0.5;
+        // Increase the proportional gains to respond more aggressively
+        Kp_task_ << 10.0, 10.0, 10.0, 0.0, 0.0, 0.0;
+
 
         // ********* 6. ROS commands *********
         // 6.1 Publisher
@@ -255,11 +277,22 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         // 6.2 Subscriber
         sub_command_ = n.subscribe("/motion_command", 1000, &Computed_Torque_Controller::commandCB, this);
 
+        sub_aurco = n.subscribe("/aruco_tracker", 1000, &Computed_Torque_Controller::commandAruco, this);
+
+
         // Initialize the command buffer with zeros
         Commands initial_commands;
         initial_commands.qd.data = Eigen::VectorXd::Zero(n_joints_);
         initial_commands.qd_dot.data = Eigen::VectorXd::Zero(n_joints_);
         initial_commands.qd_ddot.data = Eigen::VectorXd::Zero(n_joints_);
+        initial_commands.xd = Eigen::VectorXd::Zero(6);
+        initial_commands.xd_dot = Eigen::VectorXd::Zero(6);
+
+
+        // In your init function
+        initial_commands.aruco_x = Eigen::Vector3d::Zero();
+        initial_commands.aruco_x_dot = Eigen::Vector3d::Zero();
+        
         command_buffer_.initRT(initial_commands);
 
         // Initialize control mode to 1
@@ -273,10 +306,11 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
     void commandCB(const std_msgs::Float64MultiArrayConstPtr &msg)
     {
-        if (msg->data.size() != 3 * n_joints_)
+        size_t expected_size = 3 * n_joints_ + 12; // 18 + 12 = 30
+        if (msg->data.size() != expected_size)
         {
             ROS_ERROR_STREAM("Dimension of command (" << msg->data.size()
-                             << ") does not match expected size (" << 3 * n_joints_ << ")! Not executing!");
+                             << ") does not match expected size (" << expected_size << ")! Not executing!");
             return;
         }
 
@@ -284,7 +318,10 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         cmd.qd.data = Eigen::VectorXd::Zero(n_joints_);
         cmd.qd_dot.data = Eigen::VectorXd::Zero(n_joints_);
         cmd.qd_ddot.data = Eigen::VectorXd::Zero(n_joints_);
+        cmd.xd = Eigen::VectorXd::Zero(6);
+        cmd.xd_dot = Eigen::VectorXd::Zero(6);
 
+        // Read joint positions, velocities, and accelerations
         for (size_t i = 0; i < n_joints_; i++)
         {
             cmd.qd(i) = msg->data[i];
@@ -292,14 +329,44 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             cmd.qd_ddot(i) = msg->data[2 * n_joints_ + i];
         }
 
+        // Read task-space coordinates and velocities
+        size_t offset = 3 * n_joints_;
+        for (size_t i = 0; i < 6; i++)
+        {
+            cmd.xd(i) = msg->data[offset + i];
+            cmd.xd_dot(i) = msg->data[offset + 6 + i];
+        }
+
         command_buffer_.writeFromNonRT(cmd);
+    }
+
+
+    void commandAruco(const arm_controllers::ArucoTrackerConstPtr &msg)
+    {
+        // Assuming Commands struct is using Eigen::VectorXd for aruco_x and aruco_x_dot
+        Commands cmd = *(command_buffer_.readFromNonRT());
+
+        // Update the position and velocity data
+        Eigen::Vector3d position(msg->position.x, msg->position.y, msg->position.z);
+        Eigen::Vector3d velocity(msg->velocity.x, msg->velocity.y, msg->velocity.z);
+
+        // You can directly assign Eigen vectors if cmd.aruco_x and cmd.aruco_x_dot are of compatible types
+        cmd.aruco_x = position;
+        cmd.aruco_x_dot = velocity;
+
+        // Write back the updated commands
+        command_buffer_.writeFromNonRT(cmd);
+
+        // Debug output
+        ROS_INFO_STREAM("Updated Aruco position: " << position.transpose());
+        ROS_INFO_STREAM("Updated Aruco velocity: " << velocity.transpose());
     }
 
     // Callback function for control mode
     void controlModeCB(const std_msgs::Int32::ConstPtr &msg)
     {
         int mode = msg->data;
-        if (mode >= 1 && mode <= 5)
+        if (mode >= 1 && mode <= 7)
         {
             control_mode_buffer_.writeFromNonRT(mode);
         }
@@ -354,19 +421,19 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
                 break;
             case 2:
-                // *** Position and Velocity PD Control ***
-                
+                // *** Velocity PD Control ***
+
                 e_dot_.data = qd_dot_.data - qdot_.data;
                 tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
                 break;
             case 3:
-                
+                // Implement other control modes if needed
                 break;
             case 4:
                 // *** Velocity Controller in Joint Space with kinematic ***
                 e_.data = qd_.data - q_.data;
                 q_cmd_dot.data = qd_dot_.data + Kp_.data.cwiseProduct(e_.data);
-                
+
                 e_cmd.data = q_cmd_dot.data - qdot_.data;
                 tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
 
@@ -423,7 +490,136 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 e_cmd.data = q_cmd_dot.data - qdot_.data;
 
                 // Compute torque command
-                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data) ) + G_.data + C_.data;
+                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
+
+                break;
+            }
+            case 6:
+            {
+                // *** Control in Task Space using Cartesian coordinates from the command ***
+                // Compute current end-effector pose x_
+                fk_pos_solver_->JntToCart(q_, x_);
+
+                // Compute Jacobian at current q_
+                jnt_to_jac_solver_->JntToJac(q_, J_);
+
+                // Compute current end-effector velocity xdot_
+                xdot_ = J_.data * qdot_.data;
+
+                // Construct desired end-effector pose xd_frame_ from cmd.xd
+                xd_frame_.p = KDL::Vector(cmd.xd(0), cmd.xd(1), cmd.xd(2));
+                xd_frame_.M = KDL::Rotation::RPY(cmd.xd(3), cmd.xd(4), cmd.xd(5));
+
+                // Compute task-space position error ex_ = xd_ - x_
+                ex_temp_ = KDL::diff(x_, xd_frame_);
+                ex_(0) = ex_temp_.vel(0);
+                ex_(1) = ex_temp_.vel(1);
+                ex_(2) = ex_temp_.vel(2);
+                ex_(3) = ex_temp_.rot(0);
+                ex_(4) = ex_temp_.rot(1);
+                ex_(5) = ex_temp_.rot(2);
+
+                // Compute desired task-space velocity
+                xd_dot_desired = cmd.xd_dot + Kp_task_.cwiseProduct(ex_);
+
+                // Compute pseudoinverse of current Jacobian J_
+                pseudo_inverse(J_.data, J_pinv);
+
+                // Compute desired joint velocities from task-space velocities
+                qd_dot_task = J_pinv * xd_dot_desired;
+
+                // Compute velocity error
+                e_cmd.data = qd_dot_task - qdot_.data;
+
+                // Compute torque command
+                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
+
+                break;
+            }
+            case  7:
+            {   
+                // *** Control in Task Space using Aruco Tracker Data ***
+
+                Commands cmd = *(command_buffer_.readFromRT());
+                ROS_INFO_STREAM("Using Aruco position: " << cmd.aruco_x.transpose());
+                ROS_INFO_STREAM("Using Aruco velocity: " << cmd.aruco_x_dot.transpose());
+
+                // 1. Compute current end-effector pose x_
+                fk_pos_solver_->JntToCart(q_, x_);
+
+                // 2. Compute Jacobian at current q_
+                jnt_to_jac_solver_->JntToJac(q_, J_);
+
+                // 3. Compute current end-effector velocity xdot_
+                xdot_ = J_.data * qdot_.data;
+
+                // 4. Obtain the Aruco marker position in the camera frame
+                KDL::Vector p_marker_in_camera(cmd.aruco_x(0), cmd.aruco_x(1), cmd.aruco_x(2));
+
+                
+
+                // 5. Compute the transformation from end-effector to camera frame (T_ee_camera)
+                // Adjust the rotation and translation to match your actual setup
+                KDL::Rotation R_ee_camera = KDL::Rotation::RotY(M_PI);  // Rotate 180 degrees around Y-axis
+                KDL::Vector p_ee_camera(0.0, 0.0, 0.0);  // Camera is at the end-effector origin
+
+                T_ee_camera.M = R_ee_camera;
+                T_ee_camera.p = p_ee_camera;
+
+
+
+                // 6. Compute the transformation from base frame to camera frame
+                KDL::Frame T_base_camera = x_ * T_ee_camera;
+
+                // 7. Transform the marker position to the base frame
+                KDL::Vector p_marker_in_base = T_base_camera * p_marker_in_camera;
+
+                // 8. Add the desired height offset (if needed)
+                double height_offset = 0.1;  // Adjust based on your requirements
+                p_marker_in_base.z(p_marker_in_base.z() + height_offset);
+
+                // 9. Construct desired end-effector pose xd_frame_ using the transformed marker position
+                xd_frame_.p = p_marker_in_base;
+
+                // Optionally set a fixed desired orientation
+                KDL::Rotation desired_orientation = KDL::Rotation::RPY(0.0, M_PI, 0.0);  // Adjust as needed
+                xd_frame_.M = desired_orientation;
+
+                // 10. Compute task-space position error ex_ = xd_ - x_
+                ex_temp_ = KDL::diff(x_, xd_frame_);
+                ex_(0) = ex_temp_.vel(0);
+                ex_(1) = ex_temp_.vel(1);
+                ex_(2) = ex_temp_.vel(2);
+                ex_(3) = ex_temp_.rot(0);
+                ex_(4) = ex_temp_.rot(1);
+                ex_(5) = ex_temp_.rot(2);
+
+                // 11. Compute desired task-space velocity
+                // For simplicity, set desired velocity to zero and focus on position control
+                xd_dot_desired = Kp_task_.cwiseProduct(ex_);
+
+                // 12. Compute pseudoinverse of current Jacobian J_
+                pseudo_inverse(J_.data, J_pinv);
+
+                // 13. Compute desired joint velocities from task-space velocities
+                qd_dot_task = J_pinv * xd_dot_desired;
+
+                // 14. Compute velocity error
+                e_cmd.data = qd_dot_task - qdot_.data;
+
+                // 15. Compute torque command
+                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
+
+                // Apply torque commands
+                for (int i = 0; i < n_joints_; i++)
+                {
+                    joints_[i].setCommand(tau_d_(i));
+                }
+
+                // Optional: Debugging information
+                //ROS_INFO_STREAM("Current End-Effector Position: [" << x_.p.x() << ", " << x_.p.y() << ", " << x_.p.z() << "]");
+                //ROS_INFO_STREAM("Desired End-Effector Position: [" << xd_frame_.p.x() << ", " << xd_frame_.p.y() << ", " << xd_frame_.p.z() << "]");
+                //ROS_INFO_STREAM("Position Error: [" << ex_(0) << ", " << ex_(1) << ", " << ex_(2) << "]");
 
                 break;
             }
@@ -621,18 +817,29 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     KDL::JntArray e_, e_dot_, e_int_, e_cmd;
 
     // Task Space State
-    KDL::Frame x_;              // Current end-effector pose
-    KDL::Frame xd_frame_;       // Desired end-effector pose
-    KDL::Jacobian J_;           // Jacobian at current q_
-    KDL::Jacobian Jd_;          // Jacobian at desired qd_
-    Eigen::VectorXd xdot_;      // Current end-effector velocity
-    Eigen::VectorXd xd_dot_;    // Desired end-effector velocity
+    KDL::Frame x_;               // Current end-effector pose
+    KDL::Frame xd_frame_;        // Desired end-effector pose
+    KDL::Twist ex_temp_;         // Task-space position error as KDL::Twist
+    KDL::Jacobian J_;            // Jacobian at current q_
+    KDL::Jacobian Jd_;           // Jacobian at desired qd_
+    Eigen::VectorXd xdot_;       // Current end-effector velocity
+    Eigen::VectorXd xd_dot_;     // Desired end-effector velocity from command
     Eigen::VectorXd xd_dot_desired; // Desired task-space velocity with feedback
-    KDL::Twist ex_temp_;        // Task-space position error as KDL::Twist
-    Eigen::VectorXd ex_;        // Task-space position error as Eigen vector
-    Eigen::VectorXd Kp_task_;   // Task-space proportional gains
-    Eigen::MatrixXd J_pinv;     // Pseudoinverse of the Jacobian
+    Eigen::VectorXd ex_;         // Task-space position error as Eigen vector
+    Eigen::VectorXd Kp_task_;    // Task-space proportional gains
+    Eigen::MatrixXd J_pinv;      // Pseudoinverse of the Jacobian
     Eigen::VectorXd qd_dot_task; // Desired joint velocities from task-space mapping
+
+    //aruco
+    Eigen::VectorXd aruco_x; 
+    Eigen::VectorXd aruco_x_dot; 
+
+    // Define the fixed transformation from end-effector to camera frame
+    KDL::Frame T_ee_camera;
+    
+    // Set the translation and rotation according to your setup
+    // For example, if the camera is translated along the z-axis of the end-effector by 0.1 meters:
+
 
     // Input
     KDL::JntArray tau_d_;
@@ -655,6 +862,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     ros::Subscriber sub_command_;
     realtime_tools::RealtimeBuffer<Commands> command_buffer_;
 
+    //Ros subscriber aruco
+    ros::Subscriber sub_aurco;
     // Control mode
     realtime_tools::RealtimeBuffer<int> control_mode_buffer_;
     ros::Subscriber sub_control_mode_;

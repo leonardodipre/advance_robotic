@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<package>
+<package format="2">
   <name>arm_controllers</name>
   <version>0.0.3</version>
   <description>Robot Arm Controllers</description>
@@ -10,6 +10,7 @@
 
   <license>MIT</license>
 
+  <!-- Build dependencies -->
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>controller_interface</build_depend>
   <build_depend>urdf</build_depend>
@@ -20,20 +21,24 @@
   <build_depend>dynamic_reconfigure</build_depend>
   <build_depend>roscpp</build_depend>
   <build_depend>std_msgs</build_depend>
-  <build_depend>rospy</build_depend> <!-- Added for Python script support -->
+  <build_depend>rospy</build_depend> <!-- For Python support -->
+  <build_depend>message_generation</build_depend> <!-- Added for message generation -->
 
-  <run_depend>controller_interface</run_depend>
-  <run_depend>urdf</run_depend>
-  <run_depend>control_msgs</run_depend>
-  <run_depend>kdl_parser</run_depend>
-  <run_depend>realtime_tools</run_depend>
-  <run_depend>angles</run_depend>
-  <run_depend>dynamic_reconfigure</run_depend>
-  <run_depend>roscpp</run_depend>
-  <run_depend>std_msgs</run_depend>
-  <run_depend>rospy</run_depend> <!-- Added for Python script support -->
+  <!-- Execution dependencies (replaces run_depend) -->
+  <exec_depend>controller_interface</exec_depend>
+  <exec_depend>urdf</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>kdl_parser</exec_depend>
+  <exec_depend>realtime_tools</exec_depend>
+  <exec_depend>angles</exec_depend>
+  <exec_depend>dynamic_reconfigure</exec_depend>
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>rospy</exec_depend> <!-- For Python support -->
+  <exec_depend>message_runtime</exec_depend> <!-- Added for runtime support for messages -->
 
-  <run_depend>python3</run_depend>
+  <!-- For Python scripts -->
+  <exec_depend>python3</exec_depend>
 
   <export>
     <controller_interface plugin="${prefix}/controller_plugins.xml" />
