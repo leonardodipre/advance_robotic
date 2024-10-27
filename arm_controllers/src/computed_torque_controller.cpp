@@ -533,7 +533,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             case  7:
             {   
                
-    // *** Control in Task Space using Aruco Tracker Data ***
+                // *** Control in Task Space using Aruco Tracker Data ***
                 ROS_INFO("Entering Control Mode 7: Aruco Tracker Data-Based Control");
 
                 // 1. Read Aruco data from buffer
@@ -541,22 +541,19 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 ROS_INFO_STREAM("Aruco Data Received - Position: " << aruco_data.aruco_x.transpose() 
                                 << ", Velocity: " << aruco_data.aruco_x_dot.transpose());
 
-                // Check if Aruco data is valid (e.g., non-zero)
-                if (aruco_data.aruco_x.norm() == 0.0 && aruco_data.aruco_x_dot.norm() == 0.0)
-                {
-                    ROS_WARN("Aruco Data is Zero. Skipping Control Mode 7 Execution.");
-                    break;
-                }
+                
 
                 // 2. Compute current end-effector pose x_
                 if (fk_pos_solver_->JntToCart(q_, x_) < 0)
                 {
                     ROS_ERROR("Failed to compute forward kinematics for current joint positions.");
-                    break;
+                    return;
                 }
+
                 // Retrieve RPY angles
                 double ee_roll, ee_pitch, ee_yaw;
                 x_.M.GetRPY(ee_roll, ee_pitch, ee_yaw);
+
                 ROS_INFO_STREAM("Current End-Effector Pose: Position - " << x_.p.x() << ", " << x_.p.y() << ", " << x_.p.z()
                                 << " Orientation (RPY) - " << ee_roll << ", " << ee_pitch << ", " << ee_yaw);
 
@@ -564,13 +561,13 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 if (jnt_to_jac_solver_->JntToJac(q_, J_) < 0)
                 {
                     ROS_ERROR("Failed to compute Jacobian for current joint positions.");
-                    break;
+                    return;
                 }
-                ROS_INFO_STREAM("Jacobian:\n" << J_.data);
+                //ROS_INFO_STREAM("Jacobian:\n" << J_.data);
 
                 // 4. Compute current end-effector velocity xdot_
                 xdot_ = J_.data * qdot_.data;
-                ROS_INFO_STREAM("Current End-Effector Velocity: " << xdot_.transpose());
+                //ROS_INFO_STREAM("Current End-Effector Velocity: " << xdot_.transpose());
 
                 // 5. Obtain the Aruco marker position in the camera frame
                 KDL::Vector p_marker_in_camera(aruco_data.aruco_x(0), aruco_data.aruco_x(1), aruco_data.aruco_x(2));
@@ -586,6 +583,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 // Retrieve RPY angles for T_ee_camera
                 double T_ee_camera_roll, T_ee_camera_pitch, T_ee_camera_yaw;
                 T_ee_camera.M.GetRPY(T_ee_camera_roll, T_ee_camera_pitch, T_ee_camera_yaw);
+                /*
                 ROS_INFO_STREAM("Transformation from EE to Camera - Rotation (RPY): " 
                                 << T_ee_camera_roll << ", " 
                                 << T_ee_camera_pitch << ", " 
@@ -593,35 +591,44 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                                 << " Position: " << T_ee_camera.p.x() << ", " 
                                 << T_ee_camera.p.y() << ", " 
                                 << T_ee_camera.p.z());
+                */
 
                 // 7. Compute the transformation from base frame to camera frame
                 KDL::Frame T_base_camera = x_ * T_ee_camera;
                 // Retrieve RPY angles for T_base_camera
-                double T_base_camera_roll, T_base_camera_pitch, T_base_camera_yaw;
-                T_base_camera.M.GetRPY(T_base_camera_roll, T_base_camera_pitch, T_base_camera_yaw);
+                double T_base_camera_roll, T_base_camera_pitch;
+                T_base_camera.M.GetRPY(T_base_camera_roll, T_base_camera_pitch, T_ee_camera_yaw);
+
+                /*
                 ROS_INFO_STREAM("Transformation from Base to Camera - Rotation (RPY): " 
                                 << T_base_camera_roll << ", " 
                                 << T_base_camera_pitch << ", " 
-                                << T_base_camera_yaw
+                                << T_ee_camera_yaw
                                 << " Position: " << T_base_camera.p.x() << ", " 
                                 << T_base_camera.p.y() << ", " 
                                 << T_base_camera.p.z());
+                */
 
                 // 8. Transform the marker position to the base frame
                 KDL::Vector p_marker_in_base = T_base_camera * p_marker_in_camera;
-                ROS_INFO_STREAM("Marker Position in Base Frame: " << p_marker_in_base.x() << ", " 
-                                << p_marker_in_base.y() << ", " << p_marker_in_base.z());
+                //ROS_INFO_STREAM("Marker Position in Base Frame: " << p_marker_in_base.x() << ", " << p_marker_in_base.y() << ", " << p_marker_in_base.z());
 
-                // 9. Add the desired height offset (if needed)
-                double height_offset = 0.05;  // Adjust based on your requirements
+                // 9. Apply Y correction
+                const double y_target = 0.0;  // Target Y position
+                const double kp_y = 0.1;  // Proportional gain for Y correction
+                double error_y = y_target - p_marker_in_base.y();  // Y position error
+                double correction_y = kp_y * error_y;  // Y correction
+                p_marker_in_base.y(p_marker_in_base.y() + correction_y);  // Correct Y position
+                //ROS_INFO_STREAM("Corrected Marker Position in Base Frame: Y after correction: " << p_marker_in_base.y());
+
+                // 10. Add the desired height offset (if needed)
+                double height_offset = -0.01;  // Adjust based on your requirements
                 p_marker_in_base.z(p_marker_in_base.z() + height_offset);
-                ROS_INFO_STREAM("Marker Position in Base Frame after Height Offset: " << p_marker_in_base.x() << ", " 
-                                << p_marker_in_base.y() << ", " << p_marker_in_base.z());
+                //ROS_INFO_STREAM("Marker Position in Base Frame after Height Offset: " << p_marker_in_base.x() << ", "  << p_marker_in_base.y() << ", " << p_marker_in_base.z());
 
                 // 10. Construct desired end-effector pose xd_frame_ using the transformed marker position
                 xd_frame_.p = p_marker_in_base;
-                ROS_INFO_STREAM("Desired End-Effector Position: " << xd_frame_.p.x() << ", " 
-                                << xd_frame_.p.y() << ", " << xd_frame_.p.z());
+                //ROS_INFO_STREAM("Desired End-Effector Position: " << xd_frame_.p.x() << ", " << xd_frame_.p.y() << ", " << xd_frame_.p.z());
 
                 // Optionally set a fixed desired orientation
                 KDL::Rotation desired_orientation = KDL::Rotation::RPY(0.0, M_PI, 0.0);  // Adjust as needed
@@ -629,7 +636,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 // Retrieve RPY angles for desired_orientation
                 double desired_roll, desired_pitch, desired_yaw;
                 xd_frame_.M.GetRPY(desired_roll, desired_pitch, desired_yaw);
-                ROS_INFO_STREAM("Desired End-Effector Orientation (RPY): " << desired_roll << ", " << desired_pitch << ", " << desired_yaw);
+               // ROS_INFO_STREAM("Desired End-Effector Orientation (RPY): " << desired_roll << ", " << desired_pitch << ", " << desired_yaw);
 
                 // 11. Compute task-space position error ex_ = xd_ - x_
                 ex_temp_ = KDL::diff(x_, xd_frame_);
@@ -650,25 +657,26 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 // Assign linear velocity with feedback
                 //xd_dot_desired.head<3>() = aruco_data.aruco_x_dot + Kp_task_.head<3>().cwiseProduct(ex_.head<3>());
                 xd_dot_desired.head<3>() = Kp_task_.head<3>().cwiseProduct(ex_.head<3>());
+                
 
                 // Assign angular velocity with feedback (set to zero based on Kp_task_ initialization)
                 //.tail<3>() = Kp_task_.tail<3>().cwiseProduct(ex_.tail<3>());
                 xd_dot_desired.tail<3>().setZero();
 
-                ROS_INFO_STREAM("Desired Task-Space Velocity (xd_dot_desired): " << xd_dot_desired.transpose());
+                //ROS_INFO_STREAM("Desired Task-Space Velocity (xd_dot_desired): " << xd_dot_desired.transpose());
 
                 // 13. Compute pseudoinverse of current Jacobian J_
                 double lambda = 0.1;  // Damping factor (tune as necessary)
                 J_pinv = pseudo_inverse_DLS(J_.data, lambda);
-                ROS_INFO_STREAM("Jacobian Pseudoinverse:\n" << J_pinv);
+                //ROS_INFO_STREAM("Jacobian Pseudoinverse:\n" << J_pinv);
 
                 // 14. Compute desired joint velocities from task-space velocities
                 qd_dot_task = J_pinv * xd_dot_desired;
-                ROS_INFO_STREAM("Desired Joint Velocities (qd_dot_task): " << qd_dot_task.transpose());
+                //ROS_INFO_STREAM("Desired Joint Velocities (qd_dot_task): " << qd_dot_task.transpose());
 
                 // 15. Compute velocity error
                 e_cmd.data = qd_dot_task - qdot_.data;
-                ROS_INFO_STREAM("Velocity Error (e_cmd): " << e_cmd.data.transpose());
+                //ROS_INFO_STREAM("Velocity Error (e_cmd): " << e_cmd.data.transpose());
 
                 // 16. Compute torque command
                 tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;

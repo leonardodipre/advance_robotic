@@ -19,7 +19,7 @@ class ArucoDetectorNode:
         rospy.init_node('aruco_detector_node')
         
         # Parameters
-        self.marker_size = rospy.get_param('~marker_size', 0.3)  # Marker size in meters
+        self.marker_size = rospy.get_param('~marker_size', 0.1)  # Marker size in meters
         self.camera_frame = rospy.get_param('~camera_frame', 'camera_color_optical_frame')
         self.reference_frame = rospy.get_param('~reference_frame', self.camera_frame)
         self.use_rectified_images = rospy.get_param('~image_is_rectified', True)
@@ -171,16 +171,7 @@ class ArucoDetectorNode:
             pose.pose.position.z
         ])
 
-        # Calculate the error between the current position of the end-effector and the desired position
-        error_position = self.desired_position - current_position
-
-        # Only position error is considered
-        error = error_position
-
-        # Publish the error
-        error_msg = Float32MultiArray()
-        error_msg.data = error.tolist()
-        self.error_pub.publish(error_msg)
+       
 
         # Publish position + velocity using the ArucoTracker message
         tracker_msg = ArucoTracker()  # Corrected message creation

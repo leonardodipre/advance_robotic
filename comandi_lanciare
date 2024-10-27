@@ -1,0 +1,17 @@
+roslaunch elfin_gazebo elfin3_empty_world.launch controller:=gravity_comp_controller
+
+roslaunch elfin_gazebo elfin3_empty_world.launch controller:=computed_torque_controller
+ 
+
+rosrun arm_controllers  movment_publisher.py
+
+rosrun arm_controllers  controll_publisher.py
+
+
+ARUCO TILES TRAKER
+
+rosrun arm_controllers arunco_vs.py
+
+rosrun arm_controllers aruco_traker_topic.py
+
+
