@@ -15,3 +15,4 @@ rosrun arm_controllers arunco_vs.py
 rosrun arm_controllers aruco_traker_topic.py
 
 
+rosrun rqt_image_view rqt_image_view

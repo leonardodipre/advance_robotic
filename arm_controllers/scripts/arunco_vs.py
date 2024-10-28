@@ -171,9 +171,7 @@ class ArucoDetectorNode:
             pose.pose.position.z
         ])
 
-       
-
-        # Publish position + velocity using the ArucoTracker message
+        # Publish position + velocity + orientation using the ArucoTracker message
         tracker_msg = ArucoTracker()  # Corrected message creation
         tracker_msg.header.stamp = rospy.Time.now()
 
@@ -182,6 +180,12 @@ class ArucoDetectorNode:
         tracker_msg.position.y = tvec[0][1]
         tracker_msg.position.z = tvec[0][2]
 
+        # Set orientation
+        tracker_msg.orientation.x = quat[0]
+        tracker_msg.orientation.y = quat[1]
+        tracker_msg.orientation.z = quat[2]
+        tracker_msg.orientation.w = quat[3]
+
         # Set velocity (this will be zero if we cannot calculate it)
         tracker_msg.velocity.x = velocity[0]
         tracker_msg.velocity.y = velocity[1]
@@ -189,6 +193,7 @@ class ArucoDetectorNode:
 
         # Publish the message
         self.aruco_tracker_pub.publish(tracker_msg)
+
 
 def main():
     try:
