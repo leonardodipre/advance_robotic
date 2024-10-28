@@ -567,22 +567,39 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                     aruco_data.aruco_q.z(),
                     aruco_data.aruco_q.w()
                 );
-
+                
+                ROS_INFO_STREAM("Aruco Data In Camera Frame - Position: ("
+                                << aruco_data.aruco_x(0) << ", "
+                                << aruco_data.aruco_x(1) << ", "
+                                << aruco_data.aruco_x(2) << "), Velocity: ("
+                                << aruco_data.aruco_x_dot(0) << ", "
+                                << aruco_data.aruco_x_dot(1) << ", "
+                                << aruco_data.aruco_x_dot(2) );
+            
                 KDL::Frame marker_pose_in_camera(R_marker_in_camera, p_marker_in_camera);
+
+                // Stampa della posizione del marker
+                ROS_INFO_STREAM("Marker Position in Camera Frame: ("
+                                << marker_pose_in_camera.p.x() << ", "
+                                << marker_pose_in_camera.p.y() << ", "
+                                << marker_pose_in_camera.p.z() << ")");
 
                 // 5. CAMERA
                 // Example values for the translation and rotation from end-effector to camera
-                double trans_x = 0.0;  // Translation along X in meters
+                double trans_x = 0.04;  // Translation along X in meters
                 double trans_y = 0.0;  // Translation along Y in meters
-                double trans_z = 0.1;  // Translation along Z in meters (example: 10 cm forward)
+                double trans_z = -0.005;  // Translation along Z in meters (example: 10 cm forward)
 
-                double rot_roll = 0.0;   // Rotation around X-axis in radians
-                double rot_pitch = 0.0;  // Rotation around Y-axis in radians
-                double rot_yaw = -M_PI;   // Rotation around Z-axis in radians (180 degrees)
+                double rot_roll = -M_PI;   // Rotation around X-axis in radians
+                double rot_pitch = 3/2*M_PI;  // Rotation around Y-axis in radians
+                double rot_yaw = 0.0;   // Rotation around Z-axis in radians (180 degrees)
 
                 KDL::Rotation camera_rotation = KDL::Rotation::RPY(rot_roll, rot_pitch, rot_yaw);
                 KDL::Vector camera_translation(trans_x, trans_y, trans_z);
+               
                 KDL::Frame T_ee_camera(camera_rotation, camera_translation);
+
+
 
                 // Invert T_ee_camera to get T_camera_ee
                 KDL::Frame T_camera_ee = T_ee_camera.Inverse();
@@ -590,27 +607,75 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 // Transform marker pose to EE frame
                 KDL::Frame marker_pose_in_ee = T_camera_ee * marker_pose_in_camera;
 
+                ROS_INFO_STREAM("Camera fram rispetto END Effector ("
+                                << marker_pose_in_ee.p.x() << ", "
+                                << marker_pose_in_ee.p.y() << ", "
+                                << marker_pose_in_ee.p.z() << ")");
+
                 // 6. Compute the transformation from base frame to marker frame
                 KDL::Frame marker_pose_in_base = x_ * marker_pose_in_ee;
 
-                // Transform marker velocity to base frame
-                KDL::Vector v_marker_in_base = x_.M * T_camera_ee.M * v_marker_in_camera;
-
-                // Extract the quaternion for marker orientation in base frame
-                KDL::Rotation R_marker_in_base = x_.M * T_camera_ee.M * R_marker_in_camera;
-                double qx_base, qy_base, qz_base, qw_base;
-                R_marker_in_base.GetQuaternion(qx_base, qy_base, qz_base, qw_base);
-
-                // Print marker data in base frame
-                ROS_INFO_STREAM("Aruco Data In BASE Frame - Position: ("
+                ROS_INFO_STREAM("BAse to Tiles: ("
                                 << marker_pose_in_base.p.x() << ", "
                                 << marker_pose_in_base.p.y() << ", "
-                                << marker_pose_in_base.p.z() << "), Velocity: ("
-                                << v_marker_in_base.x() << ", "
-                                << v_marker_in_base.y() << ", "
-                                << v_marker_in_base.z() << "), Orientation (quaternion): ["
-                                << qw_base << ", " << qx_base << ", " << qy_base << ", " << qz_base << "]");
+                                << marker_pose_in_base.p.z() << ")");
+                
 
+
+                xdot_ = J_.data * qdot_.data; 
+
+                ROS_INFO_STREAM("End-effector ROBOT frame - Position: ("
+                                << x_.p.x() << ", "
+                                << x_.p.y() << ", "
+                                << x_.p.z() << "), Velocities: "
+                                << "X: " << xdot_(0) << ", "
+                                << "Y: " << xdot_(1) << ", "
+                                << "Z: " << xdot_(2) << "; "
+                                << "Angular Velocities: "
+                                << "Roll: " << xdot_(3) << ", "
+                                << "Pitch: " << xdot_(4) << ", "
+                                << "Yaw: " << xdot_(5));
+
+
+                KDL::Vector position_error = marker_pose_in_base.p - x_.p;
+
+                ROS_INFO_STREAM("Position Error: ("
+                    << position_error.x() << ", "
+                    << position_error.y() << ", "
+                    << position_error.z() << ")");
+
+                KDL::Frame xd_frame_ = marker_pose_in_base;
+
+                // 8. Compute task-space position error ex_ = x_ - xd_frame_
+                KDL::Twist ex_temp_ = KDL::diff(x_, xd_frame_);
+
+                ex_(0) = ex_temp_.vel(0);  // X position error
+                ex_(1) = ex_temp_.vel(1);  // Y position error
+                ex_(2) = ex_temp_.vel(2);  // Z position error
+                ex_(3) = ex_temp_.rot(0);  // Roll error
+                ex_(4) = ex_temp_.rot(1);  // Pitch error
+                ex_(5) = ex_temp_.rot(2);  // Yaw error
+
+                // 9. Compute desired task-space velocity
+                Eigen::VectorXd Kp_task_(6);
+                Kp_task_ << 1.0 , 1.0 , 1.0 , 0.1 , 0.1 , 0.1 ; // Define your gains
+                Eigen::VectorXd xd_dot_desired(6);
+                xd_dot_desired = Kp_task_.cwiseProduct(ex_);
+
+                Eigen::MatrixXd J_pinv;
+                pseudo_inverse(J_.data, J_pinv);
+
+                Eigen::VectorXd qd_dot_task = J_pinv * xd_dot_desired;
+                e_cmd.data = qd_dot_task - qdot_.data;
+
+                double kd_value = 0.1; // Damping gain
+
+                Kd_.data = Eigen::VectorXd::Constant(q_.rows(), kd_value); // Define your damping gain
+                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
+
+
+               
+                /*
                 // 7. Compute current end-effector velocity in base frame
                 xdot_ = J_.data * qdot_.data; // xdot_ is a 6x1 vector [linear; angular]
                 KDL::Vector v_ee_base(xdot_(0), xdot_(1), xdot_(2));
@@ -700,8 +765,9 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
                 // Print torque commands
                 ROS_INFO_STREAM("Torque Commands: " << tau_d_.data.transpose());
-
+                */
                 break;
+                
             }
 
 
