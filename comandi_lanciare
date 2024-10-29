@@ -16,3 +16,52 @@ rosrun arm_controllers aruco_traker_topic.py
 
 
 rosrun rqt_image_view rqt_image_view
+
+
+EXERCISE 2
+
+roslaunch elfin_gazebo elfin3_empty_world.launch controller:=gravity_comp_controller
+
+rosrun arm_controllers  movment_publisher.py
+
+
+rqt_plot /elfin/gravity_comp_controller/state/error[0] \
+         /elfin/gravity_comp_controller/state/error[1] \
+         /elfin/gravity_comp_controller/state/error_dot[0] \
+         /elfin/gravity_comp_controller/state/error_dot[1] \
+         /elfin/gravity_comp_controller/state/effort_command[0] \
+         /elfin/gravity_comp_controller/state/effort_command[1]
+
+
+
+EXERCISE 3
+
+roslaunch elfin_gazebo elfin3_empty_world.launch controller:=computed_torque_controller
+ 
+
+
+rosrun arm_controllers  movment_publisher.py
+
+rosrun arm_controllers  controll_publisher.py
+
+
+
+
+EXERCISE 4
+
+roslaunch elfin_gazebo elfin3_empty_world.launch controller:=computed_torque_controller
+ 
+rosrun arm_controllers arunco_vs.py
+
+rosrun arm_controllers aruco_traker_topic.py
+
+elfin robot 
+
+75
+0
+75
+0
+70
+0
+
+

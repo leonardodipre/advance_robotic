@@ -4,9 +4,19 @@ from std_msgs.msg import Int32
 import threading
 
 def input_thread(mode_container):
+    menu_options = """
+Select control mode:
+1: PD Controller
+2: Velocity Controller
+3: None
+4: Kinematic Controller (Joint space)
+5: Kinematic Task Space
+6: Cartesian Coordinates
+7: Aruco Tracker
+Enter your choice: """
     while not rospy.is_shutdown():
         try:
-            input_mode = int(input("Select control mode (1: PD controler, 2:velocity controller, 3: None , 4: Kinematic Controller (Joint, space) , 5: Kinematic task space: , 6: Cartesian coords  , 7: Aruco traker"))
+            input_mode = int(input(menu_options))
             if 1 <= input_mode <= 7:
                 mode_container['mode'] = input_mode
             else:
@@ -21,9 +31,9 @@ def input_thread(mode_container):
             break
 
 def main():
-    rospy.init_node('controll_publisher')
+    rospy.init_node('control_publisher')
     mode_pub = rospy.Publisher('/control_mode', Int32, queue_size=10)
-    rate = rospy.Rate(200)  # 10 Hz
+    rate = rospy.Rate(200)  # 200 Hz
 
     mode_container = {'mode': 1}
 

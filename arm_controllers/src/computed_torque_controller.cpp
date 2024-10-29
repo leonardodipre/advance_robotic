@@ -546,7 +546,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             case 7:
             {
                 // *** Visual Servoing Control using Aruco Tracker Data ***
-                ROS_INFO("------------- inter ------------------------");
+                ROS_INFO("------------- Visual Servoing Control ------------------------");
 
                 // 1. Read Aruco data from buffer
                 ArucoData aruco_data = *(aruco_buffer_.readFromRT());
@@ -558,8 +558,11 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 jnt_to_jac_solver_->JntToJac(q_, J_);
 
                 // 4. Obtain the Aruco marker position in the camera frame
-                KDL::Vector p_marker_in_camera(aruco_data.aruco_x(0), aruco_data.aruco_x(1), aruco_data.aruco_x(2));
-                KDL::Vector v_marker_in_camera(aruco_data.aruco_x_dot(0), aruco_data.aruco_x_dot(1), aruco_data.aruco_x_dot(2));
+                KDL::Vector p_marker_in_camera(
+                    aruco_data.aruco_x(0),
+                    aruco_data.aruco_x(1),
+                    aruco_data.aruco_x(2)
+                );
 
                 KDL::Rotation R_marker_in_camera = KDL::Rotation::Quaternion(
                     aruco_data.aruco_q.x(),
@@ -567,208 +570,70 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                     aruco_data.aruco_q.z(),
                     aruco_data.aruco_q.w()
                 );
-                
-                ROS_INFO_STREAM("Aruco Data In Camera Frame - Position: ("
-                                << aruco_data.aruco_x(0) << ", "
-                                << aruco_data.aruco_x(1) << ", "
-                                << aruco_data.aruco_x(2) << "), Velocity: ("
-                                << aruco_data.aruco_x_dot(0) << ", "
-                                << aruco_data.aruco_x_dot(1) << ", "
-                                << aruco_data.aruco_x_dot(2) );
-            
+
                 KDL::Frame marker_pose_in_camera(R_marker_in_camera, p_marker_in_camera);
 
-                // Stampa della posizione del marker
-                ROS_INFO_STREAM("Marker Position in Camera Frame: ("
-                                << marker_pose_in_camera.p.x() << ", "
-                                << marker_pose_in_camera.p.y() << ", "
-                                << marker_pose_in_camera.p.z() << ")");
-
-                // 5. CAMERA
-                // Example values for the translation and rotation from end-effector to camera
+                // 5. CAMERA Transformation
                 double trans_x = 0.04;  // Translation along X in meters
-                double trans_y = 0.0;  // Translation along Y in meters
-                double trans_z = -0.005;  // Translation along Z in meters (example: 10 cm forward)
+                double trans_y = 0.0;   // Translation along Y in meters
+                double trans_z = -0.005;  // Translation along Z in meters
 
-                double rot_roll = -M_PI;   // Rotation around X-axis in radians
-                double rot_pitch = 3/2*M_PI;  // Rotation around Y-axis in radians
-                double rot_yaw = 0.0;   // Rotation around Z-axis in radians (180 degrees)
+                double rot_roll = -M_PI;       // Rotation around X-axis in radians
+                double rot_pitch = 1.5 * M_PI; // Use 1.5 to avoid integer division
+                double rot_yaw = 0.0;          // Rotation around Z-axis in radians
 
                 KDL::Rotation camera_rotation = KDL::Rotation::RPY(rot_roll, rot_pitch, rot_yaw);
                 KDL::Vector camera_translation(trans_x, trans_y, trans_z);
-               
+
                 KDL::Frame T_ee_camera(camera_rotation, camera_translation);
 
+                // 6. Compute the transformation from base frame to camera frame
+                KDL::Frame T_base_camera = x_ * T_ee_camera;
 
+                // 7. Transform marker pose from camera frame to base frame
+                KDL::Frame marker_pose_in_base = T_base_camera * marker_pose_in_camera;
 
-                // Invert T_ee_camera to get T_camera_ee
-                KDL::Frame T_camera_ee = T_ee_camera.Inverse();
+                // 8. Set desired end-effector pose to the marker pose
+                xd_frame_ = marker_pose_in_base;
 
-                // Transform marker pose to EE frame
-                KDL::Frame marker_pose_in_ee = T_camera_ee * marker_pose_in_camera;
+                // 9. Compute task-space position error ex_ = desired - actual
+                ex_temp_ = KDL::diff(x_, xd_frame_);
+                ex_(0) = ex_temp_.vel(0);
+                ex_(1) = ex_temp_.vel(1);
+                ex_(2) = ex_temp_.vel(2);
+                ex_(3) = ex_temp_.rot(0);
+                ex_(4) = ex_temp_.rot(1);
+                ex_(5) = ex_temp_.rot(2);
 
-                ROS_INFO_STREAM("Camera fram rispetto END Effector ("
-                                << marker_pose_in_ee.p.x() << ", "
-                                << marker_pose_in_ee.p.y() << ", "
-                                << marker_pose_in_ee.p.z() << ")");
+                // 10. Compute the derivative of the error
+                static Eigen::VectorXd ex_prev_ = Eigen::VectorXd::Zero(6);
+                Eigen::VectorXd ex_dot_ = (ex_ - ex_prev_) / dt;
+                ex_prev_ = ex_;
 
-                // 6. Compute the transformation from base frame to marker frame
-                KDL::Frame marker_pose_in_base = x_ * marker_pose_in_ee;
+                // 11. Define task-space gains
+                Kp_task_ << 0.5, 0.5, 0.5, 0.1, 0.1, 0.1; // Start with smaller gains
+                Eigen::VectorXd Kd_task_(6);
+                Kd_task_ << 0.05, 0.05, 0.05, 0.01, 0.01, 0.01;
 
-                ROS_INFO_STREAM("BAse to Tiles: ("
-                                << marker_pose_in_base.p.x() << ", "
-                                << marker_pose_in_base.p.y() << ", "
-                                << marker_pose_in_base.p.z() << ")");
-                
+                // 12. Compute desired task-space velocity
+                xd_dot_desired = Kp_task_.cwiseProduct(ex_) + Kd_task_.cwiseProduct(ex_dot_);
 
+                // 13. Compute desired joint velocities
+                double lambda = 0.01; // Damping factor
+                Eigen::MatrixXd JtJ = J_.data.transpose() * J_.data;
+                Eigen::MatrixXd damping = lambda * Eigen::MatrixXd::Identity(JtJ.rows(), JtJ.cols());
+                Eigen::MatrixXd J_pinv = (JtJ + damping).inverse() * J_.data.transpose();
 
-                xdot_ = J_.data * qdot_.data; 
+                qd_dot_task = J_pinv * xd_dot_desired;
 
-                ROS_INFO_STREAM("End-effector ROBOT frame - Position: ("
-                                << x_.p.x() << ", "
-                                << x_.p.y() << ", "
-                                << x_.p.z() << "), Velocities: "
-                                << "X: " << xdot_(0) << ", "
-                                << "Y: " << xdot_(1) << ", "
-                                << "Z: " << xdot_(2) << "; "
-                                << "Angular Velocities: "
-                                << "Roll: " << xdot_(3) << ", "
-                                << "Pitch: " << xdot_(4) << ", "
-                                << "Yaw: " << xdot_(5));
+                // 14. Compute joint acceleration
+                Eigen::VectorXd qd_ddot_task = (qd_dot_task - qdot_.data) / dt;
 
+                // 15. Compute torque command using inverse dynamics
+                tau_d_.data = M_.data * qd_ddot_task + C_.data + G_.data;
 
-                KDL::Vector position_error = marker_pose_in_base.p - x_.p;
-
-                ROS_INFO_STREAM("Position Error: ("
-                    << position_error.x() << ", "
-                    << position_error.y() << ", "
-                    << position_error.z() << ")");
-
-                KDL::Frame xd_frame_ = marker_pose_in_base;
-
-                // 8. Compute task-space position error ex_ = x_ - xd_frame_
-                KDL::Twist ex_temp_ = KDL::diff(x_, xd_frame_);
-
-                ex_(0) = ex_temp_.vel(0);  // X position error
-                ex_(1) = ex_temp_.vel(1);  // Y position error
-                ex_(2) = ex_temp_.vel(2);  // Z position error
-                ex_(3) = ex_temp_.rot(0);  // Roll error
-                ex_(4) = ex_temp_.rot(1);  // Pitch error
-                ex_(5) = ex_temp_.rot(2);  // Yaw error
-
-                // 9. Compute desired task-space velocity
-                Eigen::VectorXd Kp_task_(6);
-                Kp_task_ << 1.0 , 1.0 , 1.0 , 0.1 , 0.1 , 0.1 ; // Define your gains
-                Eigen::VectorXd xd_dot_desired(6);
-                xd_dot_desired = Kp_task_.cwiseProduct(ex_);
-
-                Eigen::MatrixXd J_pinv;
-                pseudo_inverse(J_.data, J_pinv);
-
-                Eigen::VectorXd qd_dot_task = J_pinv * xd_dot_desired;
-                e_cmd.data = qd_dot_task - qdot_.data;
-
-                double kd_value = 0.1; // Damping gain
-
-                Kd_.data = Eigen::VectorXd::Constant(q_.rows(), kd_value); // Define your damping gain
-                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
-
-
-               
-                /*
-                // 7. Compute current end-effector velocity in base frame
-                xdot_ = J_.data * qdot_.data; // xdot_ is a 6x1 vector [linear; angular]
-                KDL::Vector v_ee_base(xdot_(0), xdot_(1), xdot_(2));
-
-                // Print end-effector position and velocity
-                ROS_INFO_STREAM("End-effector in BASE Frame - Position: ("
-                                << x_.p.x() << ", "
-                                << x_.p.y() << ", "
-                                << x_.p.z() << "), Velocities: "
-                                << "X: " << xdot_(0) << ", "
-                                << "Y: " << xdot_(1) << ", "
-                                << "Z: " << xdot_(2) << "; "
-                                << "Angular Velocities: "
-                                << "Roll: " << xdot_(3) << ", "
-                                << "Pitch: " << xdot_(4) << ", "
-                                << "Yaw: " << xdot_(5));
-
-                // 8. Calculate positional error
-                KDL::Vector position_error = marker_pose_in_base.p - x_.p;
-
-                // Optionally, add an offset in z-direction
-                double z_offset_aruco = 0.4;  // Adjust this value as needed
-                position_error.z(position_error.z() + z_offset_aruco);
-
-                // Print positional error
-                ROS_INFO_STREAM("Positional Error - "
-                                << "X: " << position_error.x() << ", "
-                                << "Y: " << position_error.y() << ", "
-                                << "Z: " << position_error.z());
-
-
-                // Definisci una costante di tempo del filtro e la frequenza di aggiornamento
-                double tau = 0.5; // Costante di tempo del filtro
-                double dt = 0.01; // Intervallo di tempo tra gli aggiornamenti (100 Hz)
-
-                // Inizializza la velocità filtrata (se non è già definita)
-                static KDL::Vector v_marker_in_base_filtered(0.0, 0.0, 0.0);
-
-                // Applica il filtro passa basso
-                v_marker_in_base_filtered = v_marker_in_base_filtered + (dt / (tau + dt)) * (v_marker_in_base - v_marker_in_base_filtered);
-
-                // Usa v_marker_in_base_filtered invece di v_marker_in_base per il calcolo degli errori di velocità
-                KDL::Vector velocity_error = v_marker_in_base_filtered - v_ee_base;
-
-                // 9. Calculate velocity error
-                //KDL::Vector velocity_error = v_marker_in_base - v_ee_base;
-
-                // Print velocity error
-                ROS_INFO_STREAM("Velocity Error - "
-                                << "VX: " << velocity_error.x() << ", "
-                                << "VY: " << velocity_error.y() << ", "
-                                << "VZ: " << velocity_error.z());
-
-                // 10. Convert errors to Eigen vectors
-                Eigen::Vector3d position_error_vector(position_error.x(), position_error.y(), position_error.z());
-                Eigen::Vector3d velocity_error_vector(velocity_error.x(), velocity_error.y(), velocity_error.z());
-
-                // 11. Define Proportional and Derivative Gains
-                Eigen::Vector3d Kp_task(2.0, 2.0, 2.0);  // Adjust gains as needed
-                Eigen::Vector3d Kd_task(0.1, 0.1, 0.1);  // Adjust gains as needed
-
-                // 12. Compute desired acceleration in task space
-                Eigen::Vector3d x_ddot_desired = Kp_task.cwiseProduct(position_error_vector) + Kd_task.cwiseProduct(velocity_error_vector);
-
-                // Print desired acceleration
-                ROS_INFO_STREAM("Desired Task-Space Acceleration: " << x_ddot_desired.transpose());
-
-                // 13. Compute the Damped Least Squares Pseudoinverse of the Jacobian
-                Eigen::MatrixXd J_linear = J_.data.topRows(3);  // 3 x N matrix
-                double lambda = 0.1;  // Damping factor, adjust as needed
-                Eigen::MatrixXd J_linear_pinv = (J_linear.transpose() * J_linear + lambda * Eigen::MatrixXd::Identity(n_joints_, n_joints_)).inverse() * J_linear.transpose();
-
-                // 14. Map Task-Space Accelerations to Joint-Space Accelerations
-                Eigen::VectorXd q_ddot_desired = J_linear_pinv * x_ddot_desired;  // N x 1 vector
-
-                // Print desired joint accelerations
-                ROS_INFO_STREAM("Desired Joint Accelerations: " << q_ddot_desired.transpose());
-
-                // 15. Convert M_, C_, G_ to Eigen matrices/vectors
-                Eigen::MatrixXd M_eigen(n_joints_, n_joints_);
-                for (int i = 0; i < n_joints_; ++i)
-                    for (int j = 0; j < n_joints_; ++j)
-                        M_eigen(i, j) = M_(i, j);
-
-                // 16. Compute torque command
-                tau_d_.data = M_eigen * q_ddot_desired + C_.data + G_.data;
-
-                // Print torque commands
-                ROS_INFO_STREAM("Torque Commands: " << tau_d_.data.transpose());
-                */
-                break;
-                
             }
+
 
 
                 
