@@ -183,10 +183,7 @@ void GravityCompController::motionCommandCB(const std_msgs::Float64MultiArrayCon
     // Write the new commands into the real-time buffer
     commands_buffer_.writeFromNonRT(new_commands);  // Use the buffer for thread-safe communication
 
-    // Optionally, log if extra data is received
-    if (msg->data.size() > 2 * n_joints_) {
-        ROS_WARN("Received extra data (%lu elements) in motion_command message. Ignoring accelerations.", msg->data.size() - 2 * n_joints_);
-    }
+   
 }
 
 void GravityCompController::starting(const ros::Time& time) {

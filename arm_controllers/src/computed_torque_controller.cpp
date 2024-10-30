@@ -429,12 +429,15 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 break;
             case 2:
                 // *** Velocity PD Control ***
-
+                e_.data = qd_.data - q_.data;
                 e_dot_.data = qd_dot_.data - qdot_.data;
-                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
+
+                e_cmd.data = e_dot_.data + Kp_.data.cwiseProduct(e_.data);
+                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
+                
                 break;
             case 3:
-                // Implement other control modes if needed
+                
                 break;
             case 4:
                 // *** Velocity Controller in Joint Space with kinematic ***
@@ -597,7 +600,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 xd_frame_ = marker_pose_in_base;
 
                 // 9. Compute task-space position error ex_ = desired - actual
-                ex_temp_ = KDL::diff(x_, xd_frame_);
+                //ex_temp_ = KDL::diff(x_, xd_frame_);
+                ex_temp_ = KDL::diff(xd_frame_, x_);
                 ex_(0) = ex_temp_.vel(0);
                 ex_(1) = ex_temp_.vel(1);
                 ex_(2) = ex_temp_.vel(2);
@@ -611,7 +615,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 ex_prev_ = ex_;
 
                 // 11. Define task-space gains
-                Kp_task_ << 0.5, 0.5, 0.5, 0.1, 0.1, 0.1; // Start with smaller gains
+                Kp_task_ << 0.5, 0.5, 0.5, 0.01, 0.01, 0.01; // Start with smaller gains
                 Eigen::VectorXd Kd_task_(6);
                 Kd_task_ << 0.05, 0.05, 0.05, 0.01, 0.01, 0.01;
 
@@ -632,11 +636,10 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 // 15. Compute torque command using inverse dynamics
                 tau_d_.data = M_.data * qd_ddot_task + C_.data + G_.data;
 
+                break;
+
             }
-
-
-
-                
+    
             default:
                 ROS_WARN("Invalid control mode selected: %d", control_mode);
                 break;

@@ -151,7 +151,7 @@ def get_AB_positions():
 def linear_loop_motion(t):
     global A_positions, B_positions
     # Define frequency (cycles per second)
-    f = 0.1  # Adjust as needed for desired speed
+    f = 0.3  # Adjust as needed for desired speed
     omega = 2 * math.pi * f  # Angular frequency
 
     # Compute s(t)

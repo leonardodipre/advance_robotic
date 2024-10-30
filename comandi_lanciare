@@ -25,12 +25,13 @@ roslaunch elfin_gazebo elfin3_empty_world.launch controller:=gravity_comp_contro
 rosrun arm_controllers  movment_publisher.py
 
 
-rqt_plot /elfin/gravity_comp_controller/state/error[0] \
-         /elfin/gravity_comp_controller/state/error[1] \
-         /elfin/gravity_comp_controller/state/error_dot[0] \
+rqt_plot /elfin/gravity_comp_controller/state/error[1] \
+         /elfin/gravity_comp_controller/state/error[4] \
+         /elfin/gravity_comp_controller/state/error[6] \
          /elfin/gravity_comp_controller/state/error_dot[1] \
-         /elfin/gravity_comp_controller/state/effort_command[0] \
-         /elfin/gravity_comp_controller/state/effort_command[1]
+         /elfin/gravity_comp_controller/state/error_dot[4] \
+         /elfin/gravity_comp_controller/state/error_dot[6] \
+        
 
 
 
@@ -45,6 +46,8 @@ rosrun arm_controllers  movment_publisher.py
 rosrun arm_controllers  controll_publisher.py
 
 
+rqt_plot /elfin/computed_torque_controller/e/data[1], /elfin/computed_torque_controller/e/data[4] , /elfin/computed_torque_controller/e/data[6]
+
 
 
 EXERCISE 4
@@ -55,13 +58,13 @@ rosrun arm_controllers arunco_vs.py
 
 rosrun arm_controllers aruco_traker_topic.py
 
-elfin robot 
 
+Joints angles
 75
 0
 75
 0
-70
+75
 0
 
 
