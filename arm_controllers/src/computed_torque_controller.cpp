@@ -21,8 +21,11 @@
 #include <boost/lexical_cast.hpp>
 
 #include <realtime_tools/realtime_buffer.h>
+#include <kdl/chainiksolvervel_pinv.hpp>
+#include <kdl/chainiksolverpos_nr.hpp>
 
 #include "arm_controllers/ArucoTracker.h"
+
 
 #include <Eigen/Dense>
 #include <Eigen/SVD>
@@ -33,18 +36,6 @@
 #define R2D 180.0 / PI
 #define SaveDataMax 49
 
-struct ArucoData
-{
-    Eigen::Vector3d aruco_x;
-    Eigen::Vector3d aruco_x_dot;
-    Eigen::Quaterniond aruco_q;      // Orientation as a quaternion
-    // Eigen::Vector3d aruco_q_dot;  // Angular velocity (optional)
-
-    ArucoData() : aruco_x(Eigen::Vector3d::Zero()), 
-                 aruco_x_dot(Eigen::Vector3d::Zero()),
-                 aruco_q(Eigen::Quaterniond::Identity()) 
-                 /*, aruco_q_dot(Eigen::Vector3d::Zero())*/ {}
-};
 
 struct Commands
 {
@@ -56,6 +47,19 @@ struct Commands
     Commands() {}
 };
 
+
+struct ArucoData
+{
+    Eigen::Vector3d aruco_x;
+    Eigen::Vector3d aruco_x_dot;
+    Eigen::Quaterniond aruco_q;      // Orientation as a quaternion
+    // Eigen::Vector3d aruco_q_dot;  // Angular velocity (optional)
+
+    ArucoData() : aruco_x(Eigen::Vector3d::Zero()), 
+                 aruco_x_dot(Eigen::Vector3d::Zero()),
+                 aruco_q(Eigen::Quaterniond::Identity()) 
+                 {}
+};
 
 
 
@@ -177,6 +181,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             ROS_INFO("Constructed kdl tree");
         }
 
+       
+
         // 4.2 kdl chain
         std::string root_name, tip_name;
         if (!n.getParam("root_link", root_name))
@@ -222,6 +228,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         // 4.5 Jacobian solver initialization
         jnt_to_jac_solver_.reset(new KDL::ChainJntToJacSolver(kdl_chain_));
 
+       
+
         // 5. ********* Initialize variables *********
         // 5.1 Vector initialization
         tau_d_.data = Eigen::VectorXd::Zero(n_joints_);
@@ -244,36 +252,18 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         q_cmd_dot.data = Eigen::VectorXd::Zero(n_joints_);
         e_cmd.data = Eigen::VectorXd::Zero(n_joints_);
 
+        ex_ = Eigen::VectorXd::Zero(n_joints_); // Initialize as a 6D vector with all elements zero
+
+        //aruco
+        aruco_x.resize(3);
+        aruco_x_dot.resize(3);
+
+
         // 5.2 Matrix initialization
         M_.resize(kdl_chain_.getNrOfJoints());
         C_.resize(kdl_chain_.getNrOfJoints());
         G_.resize(kdl_chain_.getNrOfJoints());
-
-        // Inizializzazione dei Jacobiani
         J_.resize(kdl_chain_.getNrOfJoints());
-        Jd_.resize(kdl_chain_.getNrOfJoints());
-
-        // Resize vectors for task-space variables
-        xdot_.resize(6);
-        xd_dot_.resize(6);
-        xd_dot_desired.resize(6);
-        ex_.resize(6);
-        Kp_task_.resize(6);
-        qd_dot_task.resize(n_joints_);
-
-        aruco_x.resize(3);
-        aruco_x_dot.resize(3);
-
-        //Aruco camera KDL::Frame T_ee_camera;
-        // Initialize the fixed transformation from end-effector to camera frame
-        // Set the translation and rotation according to your setup
-        // Example: Camera translated along the z-axis of the end-effector by 0.1 meters
-        
-        // Initialize task-space proportional gains (tune these values as needed)
-        //Kp_task_ << 1.0, 1.0, 1.0, 0.5, 0.5, 0.5;
-        // Increase the proportional gains to respond more aggressively
-        Kp_task_ << 2.0, 2.0, 2.0, 0.0, 0.0, 0.0;
-
 
         // ********* 6. ROS commands *********
         // 6.1 Publisher
@@ -288,6 +278,10 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
         sub_aurco = n.subscribe("/aruco_tracker", 1000, &Computed_Torque_Controller::commandAruco, this);
 
+        sub_control_mode_ = n.subscribe("/control_mode", 10, &Computed_Torque_Controller::controlModeCB, this);
+
+        control_mode_buffer_.writeFromNonRT(1);
+
 
         // Initialize the command buffer with zeros
         Commands initial_commands;
@@ -298,15 +292,12 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         initial_commands.xd_dot = Eigen::VectorXd::Zero(6);
 
         command_buffer_.initRT(initial_commands);
-        
+
+        //Buffer Aruco
         ArucoData initial_aruco_data;
         aruco_buffer_.initRT(initial_aruco_data);
-
-        // Initialize control mode to 1
-        control_mode_buffer_.writeFromNonRT(1);
-
-        // Subscribe to the control mode topic
-        sub_control_mode_ = n.subscribe("/control_mode", 10, &Computed_Torque_Controller::controlModeCB, this);
+        
+    
 
         return true;
     }
@@ -347,7 +338,6 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         command_buffer_.writeFromNonRT(cmd);
     }
 
-
     void commandAruco(const arm_controllers::ArucoTrackerConstPtr &msg)
     {
         // Create a new ArucoData instance
@@ -355,21 +345,14 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         aruco_data.aruco_x = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
         aruco_data.aruco_x_dot = Eigen::Vector3d(msg->velocity.x, msg->velocity.y, msg->velocity.z);
         aruco_data.aruco_q = Eigen::Quaterniond(msg->orientation.w, msg->orientation.x, msg->orientation.y, msg->orientation.z);
-        // If angular velocity is available:
-        // aruco_data.aruco_q_dot = Eigen::Vector3d(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
-
+        
         // Write to the aruco_buffer_
         aruco_buffer_.writeFromNonRT(aruco_data);
 
-        ROS_DEBUG_STREAM("Aruco Tracker Callback - Position: " << aruco_data.aruco_x.transpose()
-                        << ", Velocity: " << aruco_data.aruco_x_dot.transpose()
-                        << ", Orientation: [" << aruco_data.aruco_q.w() << ", "
-                        << aruco_data.aruco_q.x() << ", "
-                        << aruco_data.aruco_q.y() << ", "
-                        << aruco_data.aruco_q.z() << "]");
+      
     }
 
-    // Callback function for control mode
+     // Callback function for control mode
     void controlModeCB(const std_msgs::Int32::ConstPtr &msg)
     {
         int mode = msg->data;
@@ -383,424 +366,270 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         }
     }
 
+
+
     void starting(const ros::Time &time)
     {
         t = 0.0;
         ROS_INFO("Starting Computed Torque Controller");
     }
 
-    void update(const ros::Time &time, const ros::Duration &period)
-    {
-        // ********* 0. Get states from gazebo *********
-        // 0.1 Sampling time
-        double dt = period.toSec();
-        t = t + dt;
 
-        // 0.2 Joint state
+    void update(const ros::Time &time, const ros::Duration &period){
+        // Get current joint positions and velocities
         for (int i = 0; i < n_joints_; i++)
         {
             q_(i) = joints_[i].getPosition();
             qdot_(i) = joints_[i].getVelocity();
         }
 
-        // ********* 1. Desired Trajectory in Joint Space *********
-        // Retrieve the latest commands
+        //////////////////// READ DATA FROM TOPIC /////////////////////////////
+
         Commands cmd = *(command_buffer_.readFromRT());
         qd_.data = cmd.qd.data;
         qd_dot_.data = cmd.qd_dot.data;
         qd_ddot_.data = cmd.qd_ddot.data;
 
-        // ********* 2. Motion Controller *********
-        // Get the control mode
         int control_mode = *(control_mode_buffer_.readFromRT());
 
-        // Compute model (M, G)
+
+        // Retrieve the latest commands (if any)
+      
+        ArucoData aruco_data = *(aruco_buffer_.readFromRT());
+        KDL::Vector p_marker_in_camera(
+            aruco_data.aruco_x(0),
+            aruco_data.aruco_x(1),
+            aruco_data.aruco_x(2)
+        );
+
+        KDL::Rotation R_marker_in_camera = KDL::Rotation::Quaternion(
+            aruco_data.aruco_q.x(),
+            aruco_data.aruco_q.y(),
+            aruco_data.aruco_q.z(),
+            aruco_data.aruco_q.w()
+        );
+
+        //Frame camera frame position marker aruco
+
+        KDL::Frame marker_pose_in_camera(R_marker_in_camera, p_marker_in_camera);
+
+
+        ///////////////////////////////////////////////////////////////////////////////
+
+        // Compute model (M, C, G)
         id_solver_->JntToMass(q_, M_);
         id_solver_->JntToGravity(q_, G_);
         id_solver_->JntToCoriolis(q_, qdot_, C_);
 
+
         switch (control_mode)
         {
             case 1:
-                // *** Position PD Control ***
+               {
+
                 e_.data = qd_.data - q_.data;
                 e_dot_.data = qd_dot_.data - qdot_.data;
                 tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
-                break;
-            case 2:
-                // *** Velocity PD Control ***
-                e_.data = qd_.data - q_.data;
-                e_dot_.data = qd_dot_.data - qdot_.data;
 
-                e_cmd.data = e_dot_.data + Kp_.data.cwiseProduct(e_.data);
-                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
+                // Apply torque commands
+                for (int i = 0; i < n_joints_; i++)
+                {
+                    joints_[i].setCommand(tau_d_(i));
+                }
+
+                break;
+
+               }
+
+            case 7 :
+            {   
+                ROS_INFO("---------------------Inside Aruco Traker------------------------------");
+
+                // Position
+                ROS_INFO("Marker Position in Camera Frame: [x: %f, y: %f, z: %f]", 
+                        p_marker_in_camera.x(), 
+                        p_marker_in_camera.y(), 
+                        p_marker_in_camera.z());
+
+                // Orientation as Quaternion
+                double qx, qy, qz, qw;
+                R_marker_in_camera.GetQuaternion(qx, qy, qz, qw);
+                ROS_INFO("Marker Orientation in Camera Frame (Quaternion): [x: %f, y: %f, z: %f, w: %f]", 
+                        qx, qy, qz, qw);
+
+                ////////////// END EFFECTOR POSITION TO BASE //////////
+
+                // Compute End-effector position and Jacobian
+                KDL::Frame end_effector_frame;
+                fk_pos_solver_->JntToCart(q_, end_effector_frame);
+                jnt_to_jac_solver_->JntToJac(q_, J_);
+
+                // Extract position for debugging
+                double x = end_effector_frame.p.x();
+                double y = end_effector_frame.p.y();
+                double z = end_effector_frame.p.z();
+                ROS_INFO("End-effector position: [x: %f, y: %f, z: %f]", x, y, z);
                 
-                break;
-            case 3:
                 
-                break;
-            case 4:
-                // *** Velocity Controller in Joint Space with kinematic ***
-                e_.data = qd_.data - q_.data;
-                q_cmd_dot.data = qd_dot_.data + Kp_.data.cwiseProduct(e_.data);
-
-                e_cmd.data = q_cmd_dot.data - qdot_.data;
-                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
-
-                break;
-            case 5:
-            {
-                // *** Kinematic Controller in Task Space using Velocity Controller ***
-                // Compute current end-effector pose x_
-                fk_pos_solver_->JntToCart(q_, x_);
-
-                // Compute Jacobian at current q_
-                jnt_to_jac_solver_->JntToJac(q_, J_);
-
-                // Compute current end-effector velocity xdot_
+                // End-effector velocity
                 xdot_ = J_.data * qdot_.data;
+                ROS_INFO("End-effector velocity: [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]", 
+                        xdot_(0), xdot_(1), xdot_(2), xdot_(3), xdot_(4), xdot_(5));
 
-                // Compute desired end-effector pose xd_frame_
-                fk_pos_solver_->JntToCart(qd_, xd_frame_);
 
-                // Compute Jacobian at desired qd_
-                jnt_to_jac_solver_->JntToJac(qd_, Jd_);
-
-                // Compute desired end-effector velocity xd_dot_
-                xd_dot_ = Jd_.data * qd_dot_.data;
-
-                // Compute task-space position error ex_ = xd_ - x_
-                ex_temp_ = KDL::diff(x_, xd_frame_);
-                ex_(0) = ex_temp_.vel(0);
-                ex_(1) = ex_temp_.vel(1);
-                ex_(2) = ex_temp_.vel(2);
-                ex_(3) = ex_temp_.rot(0);
-                ex_(4) = ex_temp_.rot(1);
-                ex_(5) = ex_temp_.rot(2);
-
-                // Compute desired task-space velocity xd_dot_desired
-                xd_dot_desired = xd_dot_ + Kp_task_.cwiseProduct(ex_);
-
-                // Compute pseudoinverse of current Jacobian J_
-                pseudo_inverse(J_.data, J_pinv);
-
-                // Compute desired joint velocities from task-space velocities
-                qd_dot_task = J_pinv * xd_dot_desired;
-
-                // Update qd_dot_.data
-                qd_dot_.data = qd_dot_task;
-
-                // Compute joint position error e_.data = qd_.data - q_.data
-                e_.data = qd_.data - q_.data;
-
-                // Compute desired joint velocities including position error
-                q_cmd_dot.data = qd_dot_.data + Kp_.data.cwiseProduct(e_.data);
-
-                // Compute velocity error e_cmd.data = q_cmd_dot.data - qdot_.data
-                e_cmd.data = q_cmd_dot.data - qdot_.data;
-
-                // Compute torque command
-                tau_d_.data = M_.data * (qd_ddot_.data + Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
-
-                break;
-            }
-            case 6:
-            {
-                // *** Control in Task Space using Cartesian coordinates from the command ***
-                // Compute current end-effector pose x_
-                fk_pos_solver_->JntToCart(q_, x_);
-
-                // Compute Jacobian at current q_
-                jnt_to_jac_solver_->JntToJac(q_, J_);
-
-                // Compute current end-effector velocity xdot_
-                xdot_ = J_.data * qdot_.data;
-
-                // Construct desired end-effector pose xd_frame_ from cmd.xd
-                xd_frame_.p = KDL::Vector(cmd.xd(0), cmd.xd(1), cmd.xd(2));
-                xd_frame_.M = KDL::Rotation::RPY(cmd.xd(3), cmd.xd(4), cmd.xd(5));
-
-                // Compute task-space position error ex_ = xd_ - x_
-                ex_temp_ = KDL::diff(x_, xd_frame_);
-                ex_(0) = ex_temp_.vel(0);
-                ex_(1) = ex_temp_.vel(1);
-                ex_(2) = ex_temp_.vel(2);
-                ex_(3) = ex_temp_.rot(0);
-                ex_(4) = ex_temp_.rot(1);
-                ex_(5) = ex_temp_.rot(2);
-
-                // Compute desired task-space velocity
-                xd_dot_desired = cmd.xd_dot + Kp_task_.cwiseProduct(ex_);
-
-                // Compute pseudoinverse of current Jacobian J_
-                pseudo_inverse(J_.data, J_pinv);
-
-                // Compute desired joint velocities from task-space velocities
-                qd_dot_task = J_pinv * xd_dot_desired;
-
-                // Compute velocity error
-                e_cmd.data = qd_dot_task - qdot_.data;
-
-                // Compute torque command
-                tau_d_.data = M_.data * (Kd_.data.cwiseProduct(e_cmd.data)) + G_.data + C_.data;
-
-                break;
-            }
-            case 7:
-            {
-                // *** Visual Servoing Control using Aruco Tracker Data ***
-                ROS_INFO("------------- Visual Servoing Control ------------------------");
-
-                // 1. Read Aruco data from buffer
-                ArucoData aruco_data = *(aruco_buffer_.readFromRT());
-
-                // 2. Compute current end-effector pose x_
-                fk_pos_solver_->JntToCart(q_, x_); // x_ contains the transformation from base to EE frame
-
-                // 3. Compute Jacobian at current q_
-                jnt_to_jac_solver_->JntToJac(q_, J_);
-
-                // 4. Obtain the Aruco marker position in the camera frame
-                KDL::Vector p_marker_in_camera(
-                    aruco_data.aruco_x(0),
-                    aruco_data.aruco_x(1),
-                    aruco_data.aruco_x(2)
+                /////// Trasfrom from camera frame to robot Frame ///////////////////////////
+                /*
+                // Transform from elfin_link6 to elfin_dummy_gripper
+                KDL::Frame dummy_gripper_in_link6(
+                    KDL::Rotation::RPY(M_PI / 2, -M_PI / 2, 0),
+                    KDL::Vector(0, -0.111, 0)
                 );
 
-                KDL::Rotation R_marker_in_camera = KDL::Rotation::Quaternion(
-                    aruco_data.aruco_q.x(),
-                    aruco_data.aruco_q.y(),
-                    aruco_data.aruco_q.z(),
-                    aruco_data.aruco_q.w()
+                // Transform from elfin_dummy_gripper to camera (relasense)
+                KDL::Frame camera_in_dummy_gripper(
+                    KDL::Rotation::RPY(-M_PI, 3 * M_PI / 2, 0),
+                    KDL::Vector(0.04, 0, -0.05)
                 );
 
-                KDL::Frame marker_pose_in_camera(R_marker_in_camera, p_marker_in_camera);
+                // Compute camera_in_link6
+                KDL::Frame camera_in_link6 = dummy_gripper_in_link6 * camera_in_dummy_gripper;
+                
+                // Compute camera_in_base
+                KDL::Frame camera_in_base = end_effector_frame * camera_in_link6;
 
-                // 5. CAMERA Transformation
-                double trans_x = 0.04;  // Translation along X in meters
-                double trans_y = 0.0;   // Translation along Y in meters
-                double trans_z = -0.005;  // Translation along Z in meters
+                KDL::Frame marker_in_base = camera_in_base * marker_pose_in_camera;
 
-                double rot_roll = -M_PI;       // Rotation around X-axis in radians
-                double rot_pitch = 1.5 * M_PI; // Use 1.5 to avoid integer division
-                double rot_yaw = 0.0;          // Rotation around Z-axis in radians
+                // Extract position and orientation
+                KDL::Vector marker_position_in_base = marker_in_base.p;
+                KDL::Rotation marker_orientation_in_base = marker_in_base.M;
 
-                KDL::Rotation camera_rotation = KDL::Rotation::RPY(rot_roll, rot_pitch, rot_yaw);
-                KDL::Vector camera_translation(trans_x, trans_y, trans_z);
+                // Get the quaternion
+                double qx_marker, qy_marker, qz_marker, qw_marker;
+                marker_orientation_in_base.GetQuaternion(qx_marker, qy_marker, qz_marker, qw_marker);
 
-                KDL::Frame T_ee_camera(camera_rotation, camera_translation);
+                // Output the marker position and orientation in base frame
+                ROS_INFO("Marker Position in Base Frame: [x: %f, y: %f, z: %f]",
+                        marker_position_in_base.x(),
+                        marker_position_in_base.y(),
+                        marker_position_in_base.z());
 
-                // 6. Compute the transformation from base frame to camera frame
-                KDL::Frame T_base_camera = x_ * T_ee_camera;
+                ROS_INFO("Marker Orientation in Base Frame (Quaternion): [x: %f, y: %f, z: %f, w: %f]",
+                        qx_marker, qy_marker, qz_marker, qw_marker);
+                /////////////////////////////////////
+                */
+                
+                
+                
+                // Desired end-effector pose
+                KDL::Vector desired_position(0.33, -0.13 , 0.40);
+                
+                KDL::Rotation desired_orientation = KDL::Rotation::Identity();
+                KDL::Frame desired_frame(desired_orientation, desired_position);
 
-                // 7. Transform marker pose from camera frame to base frame
-                KDL::Frame marker_pose_in_base = T_base_camera * marker_pose_in_camera;
+                ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
+                for (int i = 0; i < 6; ++i) {
+                    ex_(i) = ex_temp_(i);
+                }
 
-                // 8. Set desired end-effector pose to the marker pose
-                xd_frame_ = marker_pose_in_base;
+                ROS_INFO("Task-space position error (ex_): [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]",
+                        ex_(0), ex_(1), ex_(2), ex_(3), ex_(4), ex_(5));
 
-                // 9. Compute task-space position error ex_ = desired - actual
-                //ex_temp_ = KDL::diff(x_, xd_frame_);
-                ex_temp_ = KDL::diff(xd_frame_, x_);
-                ex_(0) = ex_temp_.vel(0);
-                ex_(1) = ex_temp_.vel(1);
-                ex_(2) = ex_temp_.vel(2);
-                ex_(3) = ex_temp_.rot(0);
-                ex_(4) = ex_temp_.rot(1);
-                ex_(5) = ex_temp_.rot(2);
+                ROS_INFO_STREAM("Jacobian:\n" << J_.data);
 
-                // 10. Compute the derivative of the error
-                static Eigen::VectorXd ex_prev_ = Eigen::VectorXd::Zero(6);
-                Eigen::VectorXd ex_dot_ = (ex_ - ex_prev_) / dt;
-                ex_prev_ = ex_;
+                
 
-                // 11. Define task-space gains
-                Kp_task_ << 0.5, 0.5, 0.5, 0.01, 0.01, 0.01; // Start with smaller gains
-                Eigen::VectorXd Kd_task_(6);
-                Kd_task_ << 0.05, 0.05, 0.05, 0.01, 0.01, 0.01;
+                // Task-space PID gains
+                KDL::Vector Kp_trans(100, 100, 100);
+                KDL::Vector Kd_trans(20, 20, 20);
 
-                // 12. Compute desired task-space velocity
-                xd_dot_desired = Kp_task_.cwiseProduct(ex_) + Kd_task_.cwiseProduct(ex_dot_);
+                KDL::Vector Kp_rot(0, 0, 0);
+                KDL::Vector Kd_rot(0, 0, 0);
 
-                // 13. Compute desired joint velocities
-                double lambda = 0.01; // Damping factor
-                Eigen::MatrixXd JtJ = J_.data.transpose() * J_.data;
-                Eigen::MatrixXd damping = lambda * Eigen::MatrixXd::Identity(JtJ.rows(), JtJ.cols());
-                Eigen::MatrixXd J_pinv = (JtJ + damping).inverse() * J_.data.transpose();
+                // Compute the task-space control effort
+                KDL::Wrench F_desired;
+                for (int i = 0; i < 3; i++) {
+                    F_desired.force(i) = Kp_trans(i) * ex_(i) + Kd_trans(i) * (-xdot_(i));
+                    F_desired.torque(i) = Kp_rot(i) * ex_(i+3) + Kd_rot(i) * (-xdot_(i+3));
+                }
+                ROS_INFO("Task-space force: [Fx: %f, Fy: %f, Fz: %f]", 
+                        F_desired.force(0), F_desired.force(1), F_desired.force(2));
+                ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]", 
+                        F_desired.torque(0), F_desired.torque(1), F_desired.torque(2));
 
-                qd_dot_task = J_pinv * xd_dot_desired;
+                // Map task-space forces to joint torques (Corrected)
+                Eigen::VectorXd F_desired_vec(6);
+                F_desired_vec << F_desired.force.x(), F_desired.force.y(), F_desired.force.z(),
+                                F_desired.torque.x(), F_desired.torque.y(), F_desired.torque.z();
+                tau_d_.data = J_.data.transpose() * F_desired_vec;
 
-                // 14. Compute joint acceleration
-                Eigen::VectorXd qd_ddot_task = (qd_dot_task - qdot_.data) / dt;
+                // Add Coriolis and Gravity compensation (Removed M * qddot_)
+                tau_d_.data += C_.data + G_.data;
 
-                // 15. Compute torque command using inverse dynamics
-                tau_d_.data = M_.data * qd_ddot_task + C_.data + G_.data;
+                // Debugging output
+                ROS_INFO("Computed joint torques (tau_):");
+                for (int i = 0; i < n_joints_; i++) {
+                    ROS_INFO("tau_[%d]: %f", i, tau_d_(i));
+                }
+
+                double roll, pitch, yaw;
+                end_effector_frame.M.GetRPY(roll, pitch, yaw);
+                ROS_INFO("End-effector orientation: [roll: %f, pitch: %f, yaw: %f]", roll, pitch, yaw);
+
+
+                ROS_INFO("-----------------------------------------------------------------------");
+
+                // Apply torque commands
+                for (int i = 0; i < n_joints_; i++)
+                {
+                    joints_[i].setCommand(tau_d_(i));
+                }
+                
 
                 break;
+            }    
 
-            }
-    
             default:
                 ROS_WARN("Invalid control mode selected: %d", control_mode);
+                
                 break;
         }
 
-        // Apply torque commands
-        for (int i = 0; i < n_joints_; i++)
-        {
-            joints_[i].setCommand(tau_d_(i));
-        }
-
-        // ********* 3. Save data *********
-        save_data();
-
-        // ********* 4. Print state *********
-        print_state();
+    
+        
+        
+        
+        
     }
+
+
 
     void stopping(const ros::Time &time)
     {
     }
 
-    void save_data()
-    {
-        // 1
-        // Simulation time (unit: sec)
-        SaveData_[0] = t;
-
-        // Desired position in joint space (unit: rad)
-        SaveData_[1] = qd_(0);
-        SaveData_[2] = qd_(1);
-        SaveData_[3] = qd_(2);
-        SaveData_[4] = qd_(3);
-        SaveData_[5] = qd_(4);
-        SaveData_[6] = qd_(5);
-
-        // Desired velocity in joint space (unit: rad/s)
-        SaveData_[7] = qd_dot_(0);
-        SaveData_[8] = qd_dot_(1);
-        SaveData_[9] = qd_dot_(2);
-        SaveData_[10] = qd_dot_(3);
-        SaveData_[11] = qd_dot_(4);
-        SaveData_[12] = qd_dot_(5);
-
-        // Desired acceleration in joint space (unit: rad/s^2)
-        SaveData_[13] = qd_ddot_(0);
-        SaveData_[14] = qd_ddot_(1);
-        SaveData_[15] = qd_ddot_(2);
-        SaveData_[16] = qd_ddot_(3);
-        SaveData_[17] = qd_ddot_(4);
-        SaveData_[18] = qd_ddot_(5);
-
-        // Actual position in joint space (unit: rad)
-        SaveData_[19] = q_(0);
-        SaveData_[20] = q_(1);
-        SaveData_[21] = q_(2);
-        SaveData_[22] = q_(3);
-        SaveData_[23] = q_(4);
-        SaveData_[24] = q_(5);
-
-        // Actual velocity in joint space (unit: rad/s)
-        SaveData_[25] = qdot_(0);
-        SaveData_[26] = qdot_(1);
-        SaveData_[27] = qdot_(2);
-        SaveData_[28] = qdot_(3);
-        SaveData_[29] = qdot_(4);
-        SaveData_[30] = qdot_(5);
-
-        // Error position in joint space (unit: rad)
-        SaveData_[31] = e_(0);
-        SaveData_[32] = e_(1);
-        SaveData_[33] = e_(2);
-        SaveData_[34] = e_(3);
-        SaveData_[35] = e_(4);
-        SaveData_[36] = e_(5);
-
-        // Error velocity in joint space (unit: rad/s)
-        SaveData_[37] = e_dot_(0);
-        SaveData_[38] = e_dot_(1);
-        SaveData_[39] = e_dot_(2);
-        SaveData_[40] = e_dot_(3);
-        SaveData_[41] = e_dot_(4);
-        SaveData_[42] = e_dot_(5);
-
-        // Error integral value in joint space (unit: rad*sec)
-        SaveData_[43] = e_int_(0);
-        SaveData_[44] = e_int_(1);
-        SaveData_[45] = e_int_(2);
-        SaveData_[46] = e_int_(3);
-        SaveData_[47] = e_int_(4);
-        SaveData_[48] = e_int_(5);
-
-        // 2
-        msg_qd_.data.clear();
-        msg_q_.data.clear();
-        msg_e_.data.clear();
-
-        msg_SaveData_.data.clear();
-
-        // 3
-        for (int i = 0; i < n_joints_; i++)
-        {
-            msg_qd_.data.push_back(qd_(i));
-            msg_q_.data.push_back(q_(i));
-            msg_e_.data.push_back(e_(i));
+    void computePseudoInverse(const Eigen::MatrixXd &J, Eigen::MatrixXd &J_pinv, double tolerance = 1e-5) {
+        // Perform SVD decomposition
+        Eigen::JacobiSVD<Eigen::MatrixXd> svd(J, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        
+        // Get singular values
+        Eigen::VectorXd singularValues = svd.singularValues();
+        
+        // Create a vector to hold the inverted singular values
+        Eigen::VectorXd singularValuesInv(singularValues.size());
+        
+        for (int i = 0; i < singularValues.size(); ++i) {
+            if (singularValues(i) > tolerance) {
+                singularValuesInv(i) = 1.0 / singularValues(i);  // Invert if above tolerance
+            } else {
+                singularValuesInv(i) = 0.0;  // Set to zero if below tolerance
+            }
         }
-
-        for (int i = 0; i < SaveDataMax; i++)
-        {
-            msg_SaveData_.data.push_back(SaveData_[i]);
-        }
-
-        // 4
-        pub_qd_.publish(msg_qd_);
-        pub_q_.publish(msg_q_);
-        pub_e_.publish(msg_e_);
-
-        pub_SaveData_.publish(msg_SaveData_);
+        
+        // Construct the pseudo-inverse
+        J_pinv = svd.matrixV() * singularValuesInv.asDiagonal() * svd.matrixU().transpose();
     }
 
-    void print_state()
-    {
-        static int count = 0;
-        if (count > 99)
-        {
-            printf("*********************************************************\n\n");
-            printf("*** Simulation Time (unit: sec)  ***\n");
-            printf("t = %f\n", t);
-            printf("\n");
-
-            printf("*** Desired State in Joint Space (unit: deg) ***\n");
-            printf("qd_(0): %f, ", qd_(0) * R2D);
-            printf("qd_(1): %f, ", qd_(1) * R2D);
-            printf("qd_(2): %f, ", qd_(2) * R2D);
-            printf("qd_(3): %f, ", qd_(3) * R2D);
-            printf("qd_(4): %f, ", qd_(4) * R2D);
-            printf("qd_(5): %f\n", qd_(5) * R2D);
-            printf("\n");
-
-            printf("*** Actual State in Joint Space (unit: deg) ***\n");
-            printf("q_(0): %f, ", q_(0) * R2D);
-            printf("q_(1): %f, ", q_(1) * R2D);
-            printf("q_(2): %f, ", q_(2) * R2D);
-            printf("q_(3): %f, ", q_(3) * R2D);
-            printf("q_(4): %f, ", q_(4) * R2D);
-            printf("q_(5): %f\n", q_(5) * R2D);
-            printf("\n");
-
-            printf("*** Joint Space Error (unit: deg)  ***\n");
-            printf("%f, ", R2D * e_(0));
-            printf("%f, ", R2D * e_(1));
-            printf("%f, ", R2D * e_(2));
-            printf("%f, ", R2D * e_(3));
-            printf("%f, ", R2D * e_(4));
-            printf("%f\n", R2D * e_(5));
-            printf("\n");
-
-            count = 0;
-        }
-        count++;
-    }
+    
 
   private:
     // Others
@@ -826,6 +655,9 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     boost::scoped_ptr<KDL::ChainDynParam> id_solver_;
     boost::scoped_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_;
     boost::scoped_ptr<KDL::ChainJntToJacSolver> jnt_to_jac_solver_;
+    boost::scoped_ptr<KDL::ChainIkSolverVel_pinv> ik_vel_solver_;
+    
+    boost::scoped_ptr<KDL::ChainIkSolverPos_NR> ik_pos_solver_; // 
 
     // Joint Space State
     KDL::JntArray qd_, qd_dot_, qd_ddot_, q_cmd_dot;
@@ -844,19 +676,10 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     Eigen::VectorXd xd_dot_desired; // Desired task-space velocity with feedback
     Eigen::VectorXd ex_;         // Task-space position error as Eigen vector
     Eigen::VectorXd Kp_task_;    // Task-space proportional gains
-    Eigen::MatrixXd J_pinv;      // Pseudoinverse of the Jacobian
+
     Eigen::VectorXd qd_dot_task; // Desired joint velocities from task-space mapping
 
-    //aruco
-    Eigen::VectorXd aruco_x; 
-    Eigen::VectorXd aruco_x_dot; 
-
-    // Define the fixed transformation from end-effector to camera frame
-    KDL::Frame T_ee_camera;
-    
-    // Set the translation and rotation according to your setup
-    // For example, if the camera is translated along the z-axis of the end-effector by 0.1 meters:
-
+ 
 
     // Input
     KDL::JntArray tau_d_;
@@ -878,49 +701,23 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     // ROS subscriber to /motion_command
     ros::Subscriber sub_command_;
     realtime_tools::RealtimeBuffer<Commands> command_buffer_;
-    realtime_tools::RealtimeBuffer<ArucoData> aruco_buffer_;
-
-    //Ros subscriber aruco
+    
+    //Aruco part
     ros::Subscriber sub_aurco;
+    realtime_tools::RealtimeBuffer<ArucoData> aruco_buffer_;
+    Eigen::VectorXd aruco_x; 
+    Eigen::VectorXd aruco_x_dot;
+
     // Control mode
     realtime_tools::RealtimeBuffer<int> control_mode_buffer_;
     ros::Subscriber sub_control_mode_;
 
-    // Pseudoinverse function
-    void pseudo_inverse(const Eigen::MatrixXd& a, Eigen::MatrixXd& result, double epsilon = std::numeric_limits<double>::epsilon())
-    {
-        Eigen::JacobiSVD<Eigen::MatrixXd> svd(a, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        double tolerance = epsilon * std::max(a.cols(), a.rows()) * svd.singularValues().array().abs().maxCoeff();
-        Eigen::VectorXd singularValues_inv = svd.singularValues();
-        for (long i = 0; i < singularValues_inv.size(); ++i)
-        {
-            if (singularValues_inv(i) > tolerance)
-            {
-                singularValues_inv(i) = 1.0 / singularValues_inv(i);
-            }
-            else
-            {
-                singularValues_inv(i) = 0.0;
-            }
-        }
-        result = svd.matrixV() * singularValues_inv.asDiagonal() * svd.matrixU().transpose();
-    }
 
-    #include <Eigen/Dense>
-
-
-
-    Eigen::MatrixXd pseudo_inverse_DLS(const Eigen::MatrixXd& J, double lambda)
-{
-    Eigen::MatrixXd JJt = J * J.transpose();
-    Eigen::MatrixXd damping = lambda * lambda * Eigen::MatrixXd::Identity(JJt.rows(), JJt.cols());
-    Eigen::MatrixXd JJt_damped = JJt + damping;
-    Eigen::MatrixXd inv_JJt_damped = JJt_damped.inverse();
-    Eigen::MatrixXd J_pinv = J.transpose() * inv_JJt_damped;
-    return J_pinv;
-}
 
 };
+
+
+
 }; // namespace arm_controllers
 
 PLUGINLIB_EXPORT_CLASS(arm_controllers::Computed_Torque_Controller, controller_interface::ControllerBase)

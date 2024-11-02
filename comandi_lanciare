@@ -58,8 +58,11 @@ rosrun arm_controllers arunco_vs.py
 
 rosrun arm_controllers aruco_traker_topic.py
 
+rosrun aruco_ros single
 
 Joints angles
+
+
 75
 0
 75

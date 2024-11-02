@@ -12,10 +12,6 @@
 
   <xacro:property name="PI" value="3.1415926535897931"/>
 
-  <xacro:sensor_d435 name="relasense" parent="elfin_dummy_gripper">
-  <origin xyz="0.04 0 -0.05" rpy="${-PI} ${3*PI/2} 0"/>
-  </xacro:sensor_d435>
-  
   
   <link name="world"/>
   
@@ -450,5 +446,17 @@
     <child
       link="elfin_dummy_gripper" />
   </joint>
-  
+
+  <xacro:sensor_d435 name="relasense" parent="elfin_dummy_gripper">
+    <origin xyz="0.04 0 -0.05" rpy="${-PI} ${3*PI/2} 0"/>
+  </xacro:sensor_d435>
+
+
+
 </robot>
+
+
+
+
+  
+  

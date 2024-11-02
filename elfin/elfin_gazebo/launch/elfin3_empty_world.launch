@@ -2,6 +2,7 @@
   <!-- Define the controller argument with a default value -->
   <arg name="controller" default="gravity_comp_controller" />
 
+  
   <!-- Set the Gazebo model path to include custom models and default Gazebo models -->
   <env name="GAZEBO_MODEL_PATH" value="$(find elfin_gazebo)/models:$(optenv GAZEBO_MODEL_PATH)" />
 
