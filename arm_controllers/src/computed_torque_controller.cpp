@@ -26,7 +26,7 @@
 
 #include "arm_controllers/ArucoTracker.h"
 
-
+#include <geometry_msgs/PoseStamped.h>
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <limits>
@@ -171,7 +171,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
         // 4. ********* KDL *********
         // 4.1 kdl parser
-        if (!kdl_parser::treeFromUrdfModel(urdf, kdl_tree_))
+        if (!kdl_parser::treeFromUrdfModel(urdf, kdl_tree_ ))
         {
             ROS_ERROR("Failed to construct kdl tree");
             return false;
@@ -276,7 +276,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         // 6.2 Subscriber
         sub_command_ = n.subscribe("/motion_command", 1000, &Computed_Torque_Controller::commandCB, this);
 
-        sub_aurco = n.subscribe("/aruco_tracker", 1000, &Computed_Torque_Controller::commandAruco, this);
+        sub_aurco = n.subscribe("/transformed_aruco_pose", 1000, &Computed_Torque_Controller::commandAruco, this);
+ 
 
         sub_control_mode_ = n.subscribe("/control_mode", 10, &Computed_Torque_Controller::controlModeCB, this);
 
@@ -338,14 +339,17 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         command_buffer_.writeFromNonRT(cmd);
     }
 
-    void commandAruco(const arm_controllers::ArucoTrackerConstPtr &msg)
+    void commandAruco(const geometry_msgs::PoseStamped::ConstPtr &msg)
     {
+
         // Create a new ArucoData instance
         ArucoData aruco_data;
-        aruco_data.aruco_x = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
-        aruco_data.aruco_x_dot = Eigen::Vector3d(msg->velocity.x, msg->velocity.y, msg->velocity.z);
-        aruco_data.aruco_q = Eigen::Quaterniond(msg->orientation.w, msg->orientation.x, msg->orientation.y, msg->orientation.z);
-        
+        //aruco_data.aruco_x = Eigen::Vector3d(msg->position.x, msg->position.y, msg->position.z);
+        //aruco_data.aruco_x_dot = Eigen::Vector3d(msg->velocity.x, msg->velocity.y, msg->velocity.z);
+        //aruco_data.aruco_q = Eigen::Quaterniond(msg->orientation.w, msg->orientation.x, msg->orientation.y, msg->orientation.z);
+        aruco_data.aruco_x = Eigen::Vector3d(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+        aruco_data.aruco_q = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x, msg->pose.orientation.y, msg->pose.orientation.z);
+    
         // Write to the aruco_buffer_
         aruco_buffer_.writeFromNonRT(aruco_data);
 
@@ -402,6 +406,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             aruco_data.aruco_x(2)
         );
 
+        double roll, pitch, yaw;
         KDL::Rotation R_marker_in_camera = KDL::Rotation::Quaternion(
             aruco_data.aruco_q.x(),
             aruco_data.aruco_q.y(),
@@ -409,10 +414,15 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             aruco_data.aruco_q.w()
         );
 
+        // Ora chiama GetRPY per convertire la rotazione in roll, pitch e yaw
+        R_marker_in_camera.GetRPY(roll, pitch, yaw);
+
+        
         //Frame camera frame position marker aruco
 
-        KDL::Frame marker_pose_in_camera(R_marker_in_camera, p_marker_in_camera);
+        KDL::Frame marker_pose_in_robot_frame(R_marker_in_camera, p_marker_in_camera);
 
+        
 
         ///////////////////////////////////////////////////////////////////////////////
 
@@ -445,18 +455,6 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             {   
                 ROS_INFO("---------------------Inside Aruco Traker------------------------------");
 
-                // Position
-                ROS_INFO("Marker Position in Camera Frame: [x: %f, y: %f, z: %f]", 
-                        p_marker_in_camera.x(), 
-                        p_marker_in_camera.y(), 
-                        p_marker_in_camera.z());
-
-                // Orientation as Quaternion
-                double qx, qy, qz, qw;
-                R_marker_in_camera.GetQuaternion(qx, qy, qz, qw);
-                ROS_INFO("Marker Orientation in Camera Frame (Quaternion): [x: %f, y: %f, z: %f, w: %f]", 
-                        qx, qy, qz, qw);
-
                 ////////////// END EFFECTOR POSITION TO BASE //////////
 
                 // Compute End-effector position and Jacobian
@@ -468,62 +466,43 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 double x = end_effector_frame.p.x();
                 double y = end_effector_frame.p.y();
                 double z = end_effector_frame.p.z();
+
                 ROS_INFO("End-effector position: [x: %f, y: %f, z: %f]", x, y, z);
-                
+
+                ROS_INFO("Marker Position in Camera Frame: [x: %f, y: %f, z: %f]", 
+                        p_marker_in_camera.x(), 
+                        p_marker_in_camera.y(), 
+                        p_marker_in_camera.z());
+
+                ROS_INFO("---------------------------------------------------");
                 
                 // End-effector velocity
                 xdot_ = J_.data * qdot_.data;
-                ROS_INFO("End-effector velocity: [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]", 
-                        xdot_(0), xdot_(1), xdot_(2), xdot_(3), xdot_(4), xdot_(5));
-
-
-                /////// Trasfrom from camera frame to robot Frame ///////////////////////////
-                /*
-                // Transform from elfin_link6 to elfin_dummy_gripper
-                KDL::Frame dummy_gripper_in_link6(
-                    KDL::Rotation::RPY(M_PI / 2, -M_PI / 2, 0),
-                    KDL::Vector(0, -0.111, 0)
-                );
-
-                // Transform from elfin_dummy_gripper to camera (relasense)
-                KDL::Frame camera_in_dummy_gripper(
-                    KDL::Rotation::RPY(-M_PI, 3 * M_PI / 2, 0),
-                    KDL::Vector(0.04, 0, -0.05)
-                );
-
-                // Compute camera_in_link6
-                KDL::Frame camera_in_link6 = dummy_gripper_in_link6 * camera_in_dummy_gripper;
                 
-                // Compute camera_in_base
-                KDL::Frame camera_in_base = end_effector_frame * camera_in_link6;
+                //ROS_INFO("End-effector velocity: [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]", xdot_(0), xdot_(1), xdot_(2), xdot_(3), xdot_(4), xdot_(5));
 
-                KDL::Frame marker_in_base = camera_in_base * marker_pose_in_camera;
 
-                // Extract position and orientation
-                KDL::Vector marker_position_in_base = marker_in_base.p;
-                KDL::Rotation marker_orientation_in_base = marker_in_base.M;
-
-                // Get the quaternion
-                double qx_marker, qy_marker, qz_marker, qw_marker;
-                marker_orientation_in_base.GetQuaternion(qx_marker, qy_marker, qz_marker, qw_marker);
-
+                double x_desire = marker_pose_in_robot_frame.p.x() ;
+                double y_desire = marker_pose_in_robot_frame.p.y() ;
+                double z_desire  =  marker_pose_in_robot_frame.p.z() ;
                 // Output the marker position and orientation in base frame
-                ROS_INFO("Marker Position in Base Frame: [x: %f, y: %f, z: %f]",
-                        marker_position_in_base.x(),
-                        marker_position_in_base.y(),
-                        marker_position_in_base.z());
+                ROS_INFO("Marker Position in Base Frame: [x: %f, y: %f, z: %f]", x_desire , y_desire, z_desire);
 
-                ROS_INFO("Marker Orientation in Base Frame (Quaternion): [x: %f, y: %f, z: %f, w: %f]",
-                        qx_marker, qy_marker, qz_marker, qw_marker);
+               
                 /////////////////////////////////////
-                */
                 
                 
+                z_desire = z_desire + 0.2 ;
                 
                 // Desired end-effector pose
-                KDL::Vector desired_position(0.33, -0.13 , 0.40);
                 
-                KDL::Rotation desired_orientation = KDL::Rotation::Identity();
+                KDL::Vector desired_position(0.6, -0.08 , 0.5);
+                //KDL::Vector desired_position(x_desire, y_desire, z_desire);
+
+               
+
+                KDL::Rotation desired_orientation = KDL::Rotation::RPY(0, 90 * D2R, +180 * D2R);
+                                                
                 KDL::Frame desired_frame(desired_orientation, desired_position);
 
                 ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
@@ -542,8 +521,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 KDL::Vector Kp_trans(100, 100, 100);
                 KDL::Vector Kd_trans(20, 20, 20);
 
-                KDL::Vector Kp_rot(0, 0, 0);
-                KDL::Vector Kd_rot(0, 0, 0);
+                KDL::Vector Kp_rot( 1.0,  1.0, 1.0);
+                KDL::Vector Kd_rot( 1.0,  1.0,  1.0);
 
                 // Compute the task-space control effort
                 KDL::Wrench F_desired;
@@ -571,12 +550,11 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                     ROS_INFO("tau_[%d]: %f", i, tau_d_(i));
                 }
 
-                double roll, pitch, yaw;
-                end_effector_frame.M.GetRPY(roll, pitch, yaw);
-                ROS_INFO("End-effector orientation: [roll: %f, pitch: %f, yaw: %f]", roll, pitch, yaw);
+                
 
 
                 ROS_INFO("-----------------------------------------------------------------------");
+                ROS_INFO("");
 
                 // Apply torque commands
                 for (int i = 0; i < n_joints_; i++)
@@ -584,7 +562,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                     joints_[i].setCommand(tau_d_(i));
                 }
                 
-
+                
+                
                 break;
             }    
 
