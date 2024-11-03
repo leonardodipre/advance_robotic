@@ -496,12 +496,12 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 
                 // Desired end-effector pose
                 
-                KDL::Vector desired_position(0.6, -0.08 , 0.5);
+                KDL::Vector desired_position(0.6, -0.08 , 0.2);
                 //KDL::Vector desired_position(x_desire, y_desire, z_desire);
 
                
 
-                KDL::Rotation desired_orientation = KDL::Rotation::RPY(0, 90 * D2R, +180 * D2R);
+                KDL::Rotation desired_orientation = KDL::Rotation::RPY(0, 90 * D2R, 180 * D2R);
                                                 
                 KDL::Frame desired_frame(desired_orientation, desired_position);
 
@@ -521,8 +521,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 KDL::Vector Kp_trans(100, 100, 100);
                 KDL::Vector Kd_trans(20, 20, 20);
 
-                KDL::Vector Kp_rot( 1.0,  1.0, 1.0);
-                KDL::Vector Kd_rot( 1.0,  1.0,  1.0);
+                KDL::Vector Kp_rot( 2.0,  2.0, 2.0);
+                KDL::Vector Kd_rot( 2.0,  2.0,  2.0);
 
                 // Compute the task-space control effort
                 KDL::Wrench F_desired;
