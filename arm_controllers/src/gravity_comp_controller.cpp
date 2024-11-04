@@ -49,6 +49,22 @@ struct Commands
 };
 
 
+// Define a structure for cylindrical obstacles
+struct CylindricalObstacle {
+    KDL::Vector position;  // Base center position (x, y, z)
+    double radius;
+    double height;
+    double influence_radius; // Radius within which the obstacle repels the robot
+};
+
+struct RectangularObstacle {
+    KDL::Vector position;         // Center position of the rectangle (x, y, z)
+    double width;                 // Width of the rectangle along the x-axis
+    double height;                // Height of the rectangle along the y-axis
+    double influence_distance;    // Distance within which the obstacle repels the robot
+    double thickness;             // Thickness of the wall along the z-axis (optional)
+};
+
 
 namespace arm_controllers
 {
@@ -282,6 +298,25 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
         command_buffer_.initRT(initial_commands);
 
+
+        //Obstacle// Initialize obstacles
+        CylindricalObstacle obstacle;
+        obstacle.position = KDL::Vector(0.6, 0.0, 0.0); // Position of the base of the cylinder
+        obstacle.radius = 0.35;  // Cylinder radius
+        obstacle.height = 0.3;  // Cylinder height
+        obstacle.influence_radius = 0.4; // Influence radius for APF
+        obstacles_.push_back(obstacle);
+
+
+        /*
+        RectangularObstacle wall;
+        wall.position = KDL::Vector(0.6, 0.0, 0.0);          // Center position of the wall
+        wall.width = 1.0;                                    // Width along x-axis
+        wall.height = 0.5;                                   // Height along y-axis
+        wall.thickness = 0.1;                                // Thickness along z-axis (optional)
+        wall.influence_distance = 0.6;                       // Influence distance for APF
+        obstacles_.push_back(wall);
+        */
       
         return true;
     }
@@ -418,22 +453,12 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 xdot_ = J_.data * qdot_.data;
                 
                 //ROS_INFO("End-effector velocity: [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]", xdot_(0), xdot_(1), xdot_(2), xdot_(3), xdot_(4), xdot_(5));
-                /////////////////////////////////////
-                
-                
-              
-                // Desired end-effector pose
-                
+        
+                //Desire Position in Task space
                 KDL::Vector desired_position(xd(0), xd(1) ,xd(2));
-                //KDL::Vector desired_position(x_desire, y_desire, z_desire);
-
                
-
+                //KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
                 KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
-
-                //KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI) * KDL::Rotation::RotZ( + M_PI / 2);
-
-                     
                 KDL::Frame desired_frame(desired_orientation, desired_position);
 
                 ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
@@ -444,9 +469,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 ROS_INFO("Task-space position error (ex_): [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]",
                         ex_(0), ex_(1), ex_(2), ex_(3), ex_(4), ex_(5));
 
-                ROS_INFO_STREAM("Jacobian:\n" << J_.data);
-
-                
+             
 
                 // Task-space PID gains
                 KDL::Vector Kp_trans(500, 500, 500); // Increase proportional gains
@@ -465,6 +488,45 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                         F_desired.force(0), F_desired.force(1), F_desired.force(2));
                 ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]", 
                         F_desired.torque(0), F_desired.torque(1), F_desired.torque(2));
+
+                //Obsacole avoidance
+                KDL::Vector F_repulsive_total(0.0, 0.0, 0.0);
+                double eta = 1000.0;  // Repulsive gain
+                KDL::Vector x_current = end_effector_frame.p;
+
+                for (const auto& obs : obstacles_) {
+                    // Calculate the 3D distance vector between the end-effector and the obstacle
+                    KDL::Vector delta = x_current - obs.position;
+
+                    // Calculate the full 3D distance
+                    double distance = delta.Norm();
+
+                    // Check if the obstacle is within its "influence radius" in 3D
+                    if (distance <= obs.influence_radius) {
+                        // Calculate the repulsive force magnitude based on the full 3D distance
+                        double repulsive_magnitude = eta * (1.0 / distance - 1.0 / obs.influence_radius) / (distance * distance);
+
+                        // Normalize the delta vector to get the direction of repulsion in 3D
+                        KDL::Vector direction = delta / distance;
+
+                        // Calculate the 3D repulsive force vector
+                        KDL::Vector F_rep = repulsive_magnitude * direction;
+
+                        // Accumulate this force to the total repulsive force
+                        F_repulsive_total += F_rep;
+                    }
+                }
+
+                // Add the total 3D repulsive force to the desired force
+                F_desired.force += F_repulsive_total;
+
+                // Output the total force applied to the end-effector in task space, including the repulsive component
+                ROS_INFO("Task-space force after 3D obstacle avoidance: [Fx: %f, Fy: %f, Fz: %f]", 
+                        F_desired.force(0), F_desired.force(1), F_desired.force(2));
+
+
+
+
 
                 // Map task-space forces to joint torques (Corrected)
                 Eigen::VectorXd F_desired_vec(6);
@@ -639,6 +701,10 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
     // ROS message for end-effector position and velocity
     std_msgs::Float64MultiArray msg_end_effector_pos_;
+
+
+    //Obstacole
+    std::vector<CylindricalObstacle> obstacles_;
 
 
 

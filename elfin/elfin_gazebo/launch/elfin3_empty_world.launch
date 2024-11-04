@@ -33,10 +33,7 @@
   <!-- Run the Circular Motion Node for the ArUco Marker -->
   <node pkg="arm_controllers" type="aruco_movment.py" name="aruco_movment_node" output="screen"/>
   
-
-
-
-
+ 
 
 
 

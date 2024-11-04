@@ -75,7 +75,7 @@ def straight_line_motion(t, dt):
     return linear_transition(current_positions, target_positions, t, dt)
 
 def fixed_motion():
-    position = [math.radians(angle) for angle in [0.0, -25.0, 60.0, 0.0, 65.0, 0.0]]
+    position = [math.radians(angle) for angle in [-35.0, -25.0, 60.0, 0.0, 65.0, 0.0]]
     velocity = [0] * 6
     acceleration = [0] * 6
     return position, velocity, acceleration, task_coords, task_vel
