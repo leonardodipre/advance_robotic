@@ -542,9 +542,10 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 Eigen::VectorXd F_desired_vec(6);
                 F_desired_vec << F_desired.force.x(), F_desired.force.y(), F_desired.force.z(),
                                 F_desired.torque.x(), F_desired.torque.y(), F_desired.torque.z();
+                
                 tau_d_.data = J_.data.transpose() * F_desired_vec;
 
-                // Add Coriolis and Gravity compensation (Removed M * qddot_)
+                // Add Coriolis and Gravity compensation (Removed M * qddot_)--> inertial forces already taken into account inside F_desired end-effector : F = M*qddot;
                 tau_d_.data += C_.data + G_.data;
 
                 // Debugging output

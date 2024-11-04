@@ -94,11 +94,10 @@ install(DIRECTORY include/${PROJECT_NAME}/
 
 # Install Python scripts
 catkin_install_python(PROGRAMS 
-  scripts/joint_state_printer.py
+  
   scripts/movment_publisher.py  # Correct the name if necessary
   scripts/controll_publisher.py
-  scripts/subs.py
-  scripts/aruco_traker_topic.py 
+  scripts/potential_forces.py
   scripts/arunco_vs.py
   scripts/aruco_movment.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

@@ -1,329 +1,652 @@
-#include "utils/gravity_comp_controller.h"
+// Include necessary headers
+#include <controller_interface/controller.h>
+#include <hardware_interface/joint_command_interface.h>
+
+#include <pluginlib/class_list_macros.h>
+#include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/Int32.h> // For control mode messages
+
+#include <urdf/model.h>
+
+// KDL packages
+#include <kdl/tree.hpp>
+#include <kdl/kdl.hpp>
+#include <kdl/chain.hpp>
+#include <kdl_parser/kdl_parser.hpp>
+#include <kdl/chaindynparam.hpp>              // Inverse dynamics
+#include <kdl/chainjnttojacsolver.hpp>        // Jacobian solver
+#include <kdl/chainfksolverpos_recursive.hpp> // Forward kinematics
+
+#include <boost/scoped_ptr.hpp>
+#include <boost/lexical_cast.hpp>
+
+#include <realtime_tools/realtime_buffer.h>
+#include <kdl/chainiksolvervel_pinv.hpp>
+#include <kdl/chainiksolverpos_nr.hpp>
+
+#include "arm_controllers/ArucoTracker.h"
+
+#include <geometry_msgs/PoseStamped.h>
+#include <Eigen/Dense>
+#include <Eigen/SVD>
+#include <limits>
+
 
 #define PI 3.141592
-#define D2R PI/180.0
-#define R2D 180.0/PI
+#define D2R PI / 180.0
+#define R2D 180.0 / PI
+#define SaveDataMax 49
 
-namespace arm_controllers {
 
-GravityCompController::GravityCompController() 
-    : loop_count_(0)
+struct Commands
 {
-    // Constructor implementation (if needed)
-}
+    KDL::JntArray qd;
+    KDL::JntArray qd_dot;
+    KDL::JntArray qd_ddot;
+    Eigen::VectorXd xd;     // Desired task-space position (6 elements)
+    Eigen::VectorXd xd_dot; // Desired task-space velocity (6 elements)
+    Commands() {}
+};
 
-GravityCompController::~GravityCompController() 
+
+
+namespace arm_controllers
 {
-    command_sub_.shutdown();
-}
-
-bool GravityCompController::init(hardware_interface::EffortJointInterface* hw, ros::NodeHandle &n){   
-    // List of controlled joints
-    if (!n.getParam("joints", joint_names_))
+class GravityCompController : public controller_interface::Controller<hardware_interface::EffortJointInterface>    
+{
+  public:
+    bool init(hardware_interface::EffortJointInterface *hw, ros::NodeHandle &n)
     {
-        ROS_ERROR("Could not find joint name");
-        return false;
-    }
-    n_joints_ = joint_names_.size();
-
-    if(n_joints_ == 0)
-    {
-        ROS_ERROR("List of joint names is empty.");
-        return false;
-    }
-
-    // URDF
-    urdf::Model urdf;
-    if (!urdf.initParam("robot_description"))
-    {
-        ROS_ERROR("Failed to parse urdf file");
-        return false;
-    }
-
-    // Joint handle
-    for(int i = 0; i < n_joints_; i++)
-    {
-        try
+        // ********* 1. Get joint name / gain from the parameter server *********
+        // 1.1 Joint Name
+        if (!n.getParam("joints", joint_names_))
         {
-            joints_.push_back(hw->getHandle(joint_names_[i]));
-        }
-        catch (const hardware_interface::HardwareInterfaceException& e)
-        {
-            ROS_ERROR_STREAM("Exception thrown: " << e.what());
+            ROS_ERROR("Could not find joint name");
             return false;
         }
+        n_joints_ = joint_names_.size();
 
-        urdf::JointConstSharedPtr joint_urdf = urdf.getJoint(joint_names_[i]);
-        if (!joint_urdf)
+        if (n_joints_ == 0)
         {
-            ROS_ERROR("Could not find joint '%s' in urdf", joint_names_[i].c_str());
+            ROS_ERROR("List of joint names is empty.");
             return false;
         }
-        joint_urdfs_.push_back(joint_urdf); 
-    }
-
-    // KDL parser
-    if (!kdl_parser::treeFromUrdfModel(urdf, kdl_tree_)){
-        ROS_ERROR("Failed to construct kdl tree");
-        return false;
-    }
-
-    // KDL chain
-    std::string root_name, tip_name;
-    if (!n.getParam("root_link", root_name))
-    {
-        ROS_ERROR("Could not find root link name");
-        return false;
-    }
-    if (!n.getParam("tip_link", tip_name))
-    {
-        ROS_ERROR("Could not find tip link name");
-        return false;
-    }
-    if(!kdl_tree_.getChain(root_name, tip_name, kdl_chain_))
-    {
-        ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
-        ROS_ERROR_STREAM("  "<<root_name<<" --> "<<tip_name);
-        ROS_ERROR_STREAM("  Tree has "<<kdl_tree_.getNrOfJoints()<<" joints");
-        ROS_ERROR_STREAM("  Tree has "<<kdl_tree_.getNrOfSegments()<<" segments");
-        ROS_ERROR_STREAM("  The segments are:");
-
-        KDL::SegmentMap segment_map = kdl_tree_.getSegments();
-        KDL::SegmentMap::iterator it;
-
-        for(it = segment_map.begin(); it != segment_map.end(); it++)
-            ROS_ERROR_STREAM("    "<<(*it).first);
-
-        return false;
-    }
-
-    gravity_ = KDL::Vector::Zero();
-    gravity_(2) = -9.81;
-    G_.resize(n_joints_);    
-
-    // Inverse dynamics solver
-    id_solver_.reset(new KDL::ChainDynParam(kdl_chain_, gravity_));
-
-    // Command and state
-    tau_cmd_ = Eigen::VectorXd::Zero(n_joints_);
-    tau_fric_ = Eigen::VectorXd::Zero(n_joints_);
-    q_cmd_.data = Eigen::VectorXd::Zero(n_joints_);
-    qdot_cmd_.data = Eigen::VectorXd::Zero(n_joints_);
-    qddot_cmd_.data = Eigen::VectorXd::Zero(n_joints_);
-    
-    q_.data = Eigen::VectorXd::Zero(n_joints_);
-    qdot_.data = Eigen::VectorXd::Zero(n_joints_);
-
-    q_error_ = Eigen::VectorXd::Zero(n_joints_);
-    q_error_dot_ = Eigen::VectorXd::Zero(n_joints_);
-
-    // PIDs
-    pids_.resize(n_joints_);
-    for (size_t i = 0; i < n_joints_; i++)
-    {
-        // Load PID Controller using gains set on parameter server
-        if (!pids_[i].init(ros::NodeHandle(n, "gains/" + joint_names_[i] + "/pid")))
+        else
         {
-            ROS_ERROR_STREAM("Failed to load PID parameters from " << joint_names_[i] + "/pid");
-            return false;
-        }
-    }
-
-    // Subscriber for motion commands
-    motion_command_sub_ = n.subscribe("/motion_command", 1, &GravityCompController::motionCommandCB, this);
-    
-    // Initialize command buffer with positions and velocities only
-    commands_buffer_.initRT(std::vector<double>(2 * n_joints_, 0.0));  // Initialize with zeros
-
-    // Additional command subscriber (if needed)
-    // This part seems redundant as you already have motion_command_sub_
-    // If 'command' is a different topic, handle accordingly
-    // commands_buffer_.writeFromNonRT(std::vector<double>(n_joints_, 0.0));
-    // command_sub_ = n.subscribe<std_msgs::Float64MultiArray>("command", 1, &GravityCompController::commandCB, this);
-
-    // Start realtime state publisher
-    controller_state_pub_.reset(
-        new realtime_tools::RealtimePublisher<arm_controllers::ControllerJointState>(n, "state", 1));
-
-    controller_state_pub_->msg_.header.stamp = ros::Time::now();
-    for (size_t i = 0; i < n_joints_; i++)
-    {
-        controller_state_pub_->msg_.name.push_back(joint_names_[i]);
-        controller_state_pub_->msg_.command.push_back(0.0);
-        controller_state_pub_->msg_.command_dot.push_back(0.0);
-        controller_state_pub_->msg_.state.push_back(0.0);
-        controller_state_pub_->msg_.state_dot.push_back(0.0);
-        controller_state_pub_->msg_.error.push_back(0.0);
-        controller_state_pub_->msg_.error_dot.push_back(0.0);
-        controller_state_pub_->msg_.effort_command.push_back(0.0);
-        controller_state_pub_->msg_.effort_feedforward.push_back(0.0);
-        controller_state_pub_->msg_.effort_feedback.push_back(0.0);
-    }
-    
-    return true;
-}
-
-
-void GravityCompController::motionCommandCB(const std_msgs::Float64MultiArrayConstPtr& msg) {
-    // Check if the message contains both positions and velocities for all joints
-    if (msg->data.size() < 2 * n_joints_) {
-        ROS_ERROR("Expected at least %u positions and velocities, but got %u!", 2 * n_joints_, (unsigned int)msg->data.size());
-        return;
-    }
-
-    // Create a temporary vector to store the new commands (positions and velocities)
-    std::vector<double> new_commands(2 * n_joints_);
-
-    // Extract positions and velocities
-    for (size_t i = 0; i < n_joints_; i++) {
-        new_commands[i] = msg->data[i];                       // Position
-        new_commands[i + n_joints_] = msg->data[i + n_joints_]; // Velocity
-    }
-
-    // Write the new commands into the real-time buffer
-    commands_buffer_.writeFromNonRT(new_commands);  // Use the buffer for thread-safe communication
-
-   
-}
-
-void GravityCompController::starting(const ros::Time& time) {
-    // Set desired initial positions
-    std::vector<double> initial_positions = {0.1, -1, -0.5, 0.0, +1, -0.1}; // Define your fixed starting positions
-
-    for (size_t i = 0; i < n_joints_; i++) {
-        q_cmd_(i) = initial_positions[i];  // Set fixed position command
-        q_(i) = joints_[i].getPosition();
-        qdot_(i) = joints_[i].getVelocity();
-
-        ROS_INFO("Starting position for joint %lu: %f", i, q_cmd_(i));
-    }
-
-    ROS_INFO("Starting Gravity Compensation Controller in fixed position mode");
-}
-
-
-
-void GravityCompController::commandCB(const std_msgs::Float64MultiArrayConstPtr& msg)
-{
-    if(msg->data.size() != n_joints_)
-    { 
-        ROS_ERROR_STREAM("Dimension of command (" << msg->data.size() << ") does not match number of joints (" << n_joints_ << ")! Not executing!");
-        return; 
-    }
-    commands_buffer_.writeFromNonRT(msg->data);
-}
-
-
-void GravityCompController::update(const ros::Time& time, const ros::Duration& period) {
-    // Read the latest commands from the real-time buffer filled by motionCommandCB
-    std::vector<double> *commands_ptr = commands_buffer_.readFromRT();
-
-    if (!commands_ptr) {
-        ROS_WARN_THROTTLE(1.0, "No commands received yet.");
-        return;
-    }
-
-    std::vector<double>& commands = *commands_ptr;  // Dereference the real-time buffer pointer
-    double dt = period.toSec();  // Time step in seconds
-    double q_cmd_old;
-
-    static double t = 0;  // Time variable to track the simulation time for sinusoidal motions
-
-    for (size_t i = 0; i < n_joints_; i++) {
-        // Store old joint command for possible future use
-        q_cmd_old = q_cmd_(i);
-
-        // Set the command for each joint from the latest received command
-        q_cmd_(i) = commands[i];  // Position command for the i-th joint
-        qdot_cmd_(i) = commands[i + n_joints_];  // Velocity command for the i-th joint
-
-        ROS_DEBUG("Command for joint %lu: Position %f, Velocity %f", i, q_cmd_(i), qdot_cmd_(i));
-
-        // Enforce joint limits to make sure the command doesn't exceed joint capabilities
-        enforceJointLimits(q_cmd_(i), i);
-
-        // Get the current joint position and velocity from the hardware
-        q_(i) = joints_[i].getPosition();  // Actual joint position for the i-th joint
-        qdot_(i) = joints_[i].getVelocity();  // Actual joint velocity for the i-th joint
-
-        // Compute position error between the command and the actual position
-        if (joint_urdfs_[i]->type == urdf::Joint::REVOLUTE) {
-            // For revolute joints, compute the shortest angular distance considering limits
-            angles::shortest_angular_distance_with_limits(
-                q_(i), q_cmd_(i), joint_urdfs_[i]->limits->lower, joint_urdfs_[i]->limits->upper, q_error_(i));
-        } else if (joint_urdfs_[i]->type == urdf::Joint::CONTINUOUS) {
-            // For continuous joints, compute the shortest angular distance
-            q_error_(i) = angles::shortest_angular_distance(q_(i), q_cmd_(i));
-        } else {  // For prismatic joints
-            q_error_(i) = q_cmd_(i) - q_(i);  // Linear distance error
-        }
-
-        // Compute velocity error between the command and the actual velocity
-        q_error_dot_(i) = qdot_cmd_(i) - qdot_(i);
-
-        // Friction compensation (you can adjust parameters for real-world testing)
-        tau_fric_(i) = 1.0 * qdot_(i) + 1.0 * KDL::sign(qdot_(i));
-
-        // Gravity compensation (calculates gravity-induced torque based on current joint positions)
-        id_solver_->JntToGravity(q_, G_);
-
-        // Compute total torque command:
-        tau_cmd_(i) = G_(i) + tau_fric_(i);  // Start with gravity compensation and add friction compensation
-
-
-        // Add the PID control effort based on the position and velocity errors
-        tau_cmd_(i) += pids_[i].computeCommand(q_error_(i), q_error_dot_(i), period);
-
-        // Saturate the torque command to avoid exceeding joint effort limits
-        tau_cmd_(i) = std::max(-joint_urdfs_[i]->limits->effort, std::min(tau_cmd_(i), joint_urdfs_[i]->limits->effort));
-
-        // Apply the computed torque command to the joint
-        joints_[i].setCommand(tau_cmd_(i));
-    }
-
-    // Publish the current state every 10 iterations to reduce communication overhead
-    if (loop_count_ % 10 == 0) {
-        if (controller_state_pub_->trylock()) {
-            controller_state_pub_->msg_.header.stamp = time;
-            for (size_t i = 0; i < n_joints_; i++) {
-                // Populate the message with the current state and commands for the i-th joint
-                controller_state_pub_->msg_.command[i] = R2D * q_cmd_(i);  // Commanded position (radians to degrees)
-                controller_state_pub_->msg_.command_dot[i] = R2D * qdot_cmd_(i);  // Commanded velocity (radians to degrees)
-                controller_state_pub_->msg_.state[i] = R2D * q_(i);  // Actual position (radians to degrees)
-                controller_state_pub_->msg_.state_dot[i] = R2D * qdot_(i);  // Actual velocity (radians to degrees)
-                controller_state_pub_->msg_.error[i] = R2D * q_error_(i);  // Position error
-                controller_state_pub_->msg_.error_dot[i] = R2D * q_error_dot_(i);  // Velocity error
-                controller_state_pub_->msg_.effort_command[i] = tau_cmd_(i);  // Total torque command
-                controller_state_pub_->msg_.effort_feedback[i] = tau_cmd_(i) - G_(i);  // PID effort (command - gravity)
-                controller_state_pub_->msg_.effort_feedforward[i] = G_(i);  // Gravity compensation torque
+            ROS_INFO("Found %d joint names", n_joints_);
+            for (int i = 0; i < n_joints_; i++)
+            {
+                ROS_INFO("%s", joint_names_[i].c_str());
             }
-            // Unlock and publish the state message
-            controller_state_pub_->unlockAndPublish();
+        }
+
+        // 1.2 Gain
+        // 1.2.1 Joint Controller
+        Kp_.resize(n_joints_);
+        Kd_.resize(n_joints_);
+        Ki_.resize(n_joints_);
+
+        std::vector<double> Kp(n_joints_), Ki(n_joints_), Kd(n_joints_);
+        for (size_t i = 0; i < n_joints_; i++)
+        {
+            std::string si = boost::lexical_cast<std::string>(i + 1);
+            if (n.getParam("/elfin/gravity_comp_controller/gains/elfin_joint" + si + "/pid/p", Kp[i]))
+            {
+                Kp_(i) = Kp[i];
+            }
+            else
+            {
+                std::cout << "/elfin/gravity_comp_controller/gains/elfin_joint" + si + "/pid/p" << std::endl;
+                ROS_ERROR("Cannot find pid/p gain");
+                return false;
+            }
+
+            if (n.getParam("/elfin/gravity_comp_controller/gains/elfin_joint" + si + "/pid/i", Ki[i]))
+            {
+                Ki_(i) = Ki[i];
+            }
+            else
+            {
+                ROS_ERROR("Cannot find pid/i gain");
+                return false;
+            }
+
+            if (n.getParam("/elfin/gravity_comp_controller/gains/elfin_joint" + si + "/pid/d", Kd[i]))
+            {
+                Kd_(i) = Kd[i];
+            }
+            else
+            {
+                ROS_ERROR("Cannot find pid/d gain");
+                return false;
+            }
+        }
+
+        // 2. ********* urdf *********
+        urdf::Model urdf;
+        if (!urdf.initParam("robot_description"))
+        {
+            ROS_ERROR("Failed to parse urdf file");
+            return false;
+        }
+        else
+        {
+            ROS_INFO("Found robot_description");
+        }
+
+        // 3. ********* Get the joint object to use in the realtime loop [Joint Handle, URDF] *********
+        for (int i = 0; i < n_joints_; i++)
+        {
+            try
+            {
+                joints_.push_back(hw->getHandle(joint_names_[i]));
+            }
+            catch (const hardware_interface::HardwareInterfaceException &e)
+            {
+                ROS_ERROR_STREAM("Exception thrown: " << e.what());
+                return false;
+            }
+
+            urdf::JointConstSharedPtr joint_urdf = urdf.getJoint(joint_names_[i]);
+            if (!joint_urdf)
+            {
+                ROS_ERROR("Could not find joint '%s' in urdf", joint_names_[i].c_str());
+                return false;
+            }
+            joint_urdfs_.push_back(joint_urdf);
+        }
+
+        // 4. ********* KDL *********
+        // 4.1 kdl parser
+        if (!kdl_parser::treeFromUrdfModel(urdf, kdl_tree_ ))
+        {
+            ROS_ERROR("Failed to construct kdl tree");
+            return false;
+        }
+        else
+        {
+            ROS_INFO("Constructed kdl tree");
+        }
+
+       
+
+        // 4.2 kdl chain
+        std::string root_name, tip_name;
+        if (!n.getParam("root_link", root_name))
+        {
+            ROS_ERROR("Could not find root link name");
+            return false;
+        }
+        if (!n.getParam("tip_link", tip_name))
+        {
+            ROS_ERROR("Could not find tip link name");
+            return false;
+        }
+        if (!kdl_tree_.getChain(root_name, tip_name, kdl_chain_))
+        {
+            ROS_ERROR_STREAM("Failed to get KDL chain from tree: ");
+            ROS_ERROR_STREAM("  " << root_name << " --> " << tip_name);
+            ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfJoints() << " joints");
+            ROS_ERROR_STREAM("  Tree has " << kdl_tree_.getNrOfSegments() << " segments");
+            ROS_ERROR_STREAM("  The segments are:");
+
+            KDL::SegmentMap segment_map = kdl_tree_.getSegments();
+            KDL::SegmentMap::iterator it;
+
+            for (it = segment_map.begin(); it != segment_map.end(); it++)
+                ROS_ERROR_STREAM("    " << (*it).first);
+
+            return false;
+        }
+        else
+        {
+            ROS_INFO("Got kdl chain");
+        }
+
+        // 4.3 Inverse dynamics solver initialization
+        gravity_ = KDL::Vector::Zero();
+        gravity_(2) = -9.81;
+
+        id_solver_.reset(new KDL::ChainDynParam(kdl_chain_, gravity_));
+
+        // 4.4 Forward kinematics solver initialization
+        fk_pos_solver_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_));
+
+        // 4.5 Jacobian solver initialization
+        jnt_to_jac_solver_.reset(new KDL::ChainJntToJacSolver(kdl_chain_));
+
+       
+
+        // 5. ********* Initialize variables *********
+        // 5.1 Vector initialization
+        tau_d_.data = Eigen::VectorXd::Zero(n_joints_);
+
+        qd_.data = Eigen::VectorXd::Zero(n_joints_);
+        qd_dot_.data = Eigen::VectorXd::Zero(n_joints_);
+        qd_ddot_.data = Eigen::VectorXd::Zero(n_joints_);
+        qd_old_.data = Eigen::VectorXd::Zero(n_joints_);
+
+        q_.data = Eigen::VectorXd::Zero(n_joints_);
+        qdot_.data = Eigen::VectorXd::Zero(n_joints_);
+
+        e_.data = Eigen::VectorXd::Zero(n_joints_);
+        e_dot_.data = Eigen::VectorXd::Zero(n_joints_);
+        e_int_.data = Eigen::VectorXd::Zero(n_joints_);
+
+        // Resize joint arrays for velocity control
+        q_cmd_dot.resize(n_joints_);
+        e_cmd.resize(n_joints_);
+        q_cmd_dot.data = Eigen::VectorXd::Zero(n_joints_);
+        e_cmd.data = Eigen::VectorXd::Zero(n_joints_);
+
+        xd = Eigen::VectorXd::Zero(6);
+        xd_dot = Eigen::VectorXd::Zero(6);
+
+        ex_ = Eigen::VectorXd::Zero(n_joints_); // Initialize as a 6D vector with all elements zero
+
+
+
+        // 5.2 Matrix initialization
+        M_.resize(kdl_chain_.getNrOfJoints());
+        C_.resize(kdl_chain_.getNrOfJoints());
+        G_.resize(kdl_chain_.getNrOfJoints());
+        J_.resize(kdl_chain_.getNrOfJoints());
+
+        // ********* 6. ROS commands *********
+        // 6.1 Publisher
+        pub_qd_ = n.advertise<std_msgs::Float64MultiArray>("qd", 1000);
+        pub_q_ = n.advertise<std_msgs::Float64MultiArray>("q", 1000);
+        pub_e_ = n.advertise<std_msgs::Float64MultiArray>("e", 1000);
+
+        pub_SaveData_ = n.advertise<std_msgs::Float64MultiArray>("SaveData", 1000);
+
+        // 6.2 Subscriber
+        sub_command_ = n.subscribe("/motion_command", 1000, &GravityCompController::commandCB, this);
+
+        sub_control_mode_ = n.subscribe("/control_mode", 10, &GravityCompController::controlModeCB, this);
+
+        //publisher of end effecot
+        pub_end_effector_pos_ = n.advertise<std_msgs::Float64MultiArray>("/end_effector_pos", 1000);
+
+        
+        control_mode_buffer_.writeFromNonRT(1);
+
+
+        // Initialize the command buffer with zeros
+        Commands initial_commands;
+        initial_commands.qd.data = Eigen::VectorXd::Zero(n_joints_);
+        initial_commands.qd_dot.data = Eigen::VectorXd::Zero(n_joints_);
+        initial_commands.qd_ddot.data = Eigen::VectorXd::Zero(n_joints_);
+        initial_commands.xd = Eigen::VectorXd::Zero(6);
+        initial_commands.xd_dot = Eigen::VectorXd::Zero(6);
+
+        command_buffer_.initRT(initial_commands);
+
+      
+        return true;
+    }
+
+    void commandCB(const std_msgs::Float64MultiArrayConstPtr &msg)
+    {
+        size_t expected_size = 3 * n_joints_ + 12; // 18 + 12 = 30
+        if (msg->data.size() != expected_size)
+        {
+            ROS_ERROR_STREAM("Dimension of command (" << msg->data.size()
+                             << ") does not match expected size (" << expected_size << ")! Not executing!");
+            return;
+        }
+
+        Commands cmd;
+        cmd.qd.data = Eigen::VectorXd::Zero(n_joints_);
+        cmd.qd_dot.data = Eigen::VectorXd::Zero(n_joints_);
+        cmd.qd_ddot.data = Eigen::VectorXd::Zero(n_joints_);
+        cmd.xd = Eigen::VectorXd::Zero(6);
+        cmd.xd_dot = Eigen::VectorXd::Zero(6);
+
+        // Read joint positions, velocities, and accelerations
+        for (size_t i = 0; i < n_joints_; i++)
+        {
+            cmd.qd(i) = msg->data[i];
+            cmd.qd_dot(i) = msg->data[n_joints_ + i];
+            cmd.qd_ddot(i) = msg->data[2 * n_joints_ + i];
+        }
+
+        // Read task-space coordinates and velocities
+        size_t offset = 3 * n_joints_;
+        for (size_t i = 0; i < 6; i++)
+        {
+            cmd.xd(i) = msg->data[offset + i];
+            cmd.xd_dot(i) = msg->data[offset + 6 + i];
+        }
+
+        command_buffer_.writeFromNonRT(cmd);
+    }
+
+
+     // Callback function for control mode
+    void controlModeCB(const std_msgs::Int32::ConstPtr &msg)
+    {
+        int mode = msg->data;
+        if (mode >= 1 && mode <= 7)
+        {
+            control_mode_buffer_.writeFromNonRT(mode);
+        }
+        else
+        {
+            ROS_WARN("Received invalid control mode: %d", mode);
         }
     }
 
-    // Increment time for periodic functions like sinusoidal motion
-    t += dt;
-    loop_count_++;
-}
 
 
-
-void GravityCompController::stopping(const ros::Time& time)
-{
-    // Stop the controller and cleanup if necessary
-    ROS_INFO("Stopping Gravity Compensation Controller");
-}
-
-void GravityCompController::enforceJointLimits(double &command, unsigned int index)
-{
-    if (joint_urdfs_[index]->type == urdf::Joint::REVOLUTE)
+    void starting(const ros::Time &time)
     {
-        command = std::max(joint_urdfs_[index]->limits->lower, 
-                            std::min(joint_urdfs_[index]->limits->upper, command));
+        t = 0.0;
+        ROS_INFO("Starting Computed Torque Controller");
     }
-}
 
-} // namespace arm_controllers
+
+    void update(const ros::Time &time, const ros::Duration &period){
+        // Get current joint positions and velocities
+        for (int i = 0; i < n_joints_; i++)
+        {
+            q_(i) = joints_[i].getPosition();
+            qdot_(i) = joints_[i].getVelocity();
+        }
+
+        //////////////////// READ DATA FROM TOPIC /////////////////////////////
+
+        Commands cmd = *(command_buffer_.readFromRT());
+        qd_.data = cmd.qd.data;
+        qd_dot_.data = cmd.qd_dot.data;
+        qd_ddot_.data = cmd.qd_ddot.data;
+
+        xd = cmd.xd;          // xd is a 6-element vector
+        xd_dot = cmd.xd_dot;  // xd_dot is a 6-element vector
+
+        int control_mode = *(control_mode_buffer_.readFromRT());
+
+
+       
+        // Compute model (M, C, G)
+        id_solver_->JntToMass(q_, M_);
+        id_solver_->JntToGravity(q_, G_);
+        id_solver_->JntToCoriolis(q_, qdot_, C_);
+
+
+        switch (control_mode)
+        {
+            case 1:
+               {
+
+                e_.data = qd_.data - q_.data;
+                e_dot_.data = qd_dot_.data - qdot_.data;
+                tau_d_.data = M_.data * (qd_ddot_.data + Kp_.data.cwiseProduct(e_.data) + Kd_.data.cwiseProduct(e_dot_.data)) + G_.data + C_.data;
+
+                // Apply torque commands
+                for (int i = 0; i < n_joints_; i++)
+                {
+                    joints_[i].setCommand(tau_d_(i));
+                }
+
+                break;
+
+               }
+
+            case 7 :
+            {   
+                ROS_INFO("---------------------Inside Aruco Traker------------------------------");
+
+                ////////////// END EFFECTOR POSITION TO BASE //////////
+
+              
+
+                // Compute End-effector position and Jacobian
+                KDL::Frame end_effector_frame;  
+                fk_pos_solver_->JntToCart(q_, end_effector_frame);
+                jnt_to_jac_solver_->JntToJac(q_, J_);
+
+                // Extract position for debugging
+                double x = end_effector_frame.p.x();
+                double y = end_effector_frame.p.y();
+                double z = end_effector_frame.p.z();
+
+                ROS_INFO("End-effector position: [x: %f, y: %f, z: %f]", x, y, z);
+
+                
+                // End-effector velocity
+                xdot_ = J_.data * qdot_.data;
+                
+                //ROS_INFO("End-effector velocity: [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]", xdot_(0), xdot_(1), xdot_(2), xdot_(3), xdot_(4), xdot_(5));
+                /////////////////////////////////////
+                
+                
+              
+                // Desired end-effector pose
+                
+                KDL::Vector desired_position(xd(0), xd(1) ,xd(2));
+                //KDL::Vector desired_position(x_desire, y_desire, z_desire);
+
+               
+
+                KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
+
+                //KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI) * KDL::Rotation::RotZ( + M_PI / 2);
+
+                     
+                KDL::Frame desired_frame(desired_orientation, desired_position);
+
+                ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
+                for (int i = 0; i < 6; ++i) {
+                    ex_(i) = ex_temp_(i);
+                }
+
+                ROS_INFO("Task-space position error (ex_): [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]",
+                        ex_(0), ex_(1), ex_(2), ex_(3), ex_(4), ex_(5));
+
+                ROS_INFO_STREAM("Jacobian:\n" << J_.data);
+
+                
+
+                // Task-space PID gains
+                KDL::Vector Kp_trans(500, 500, 500); // Increase proportional gains
+                KDL::Vector Kd_trans(80, 80, 80); 
+
+                KDL::Vector Kp_rot( 15.0,  15.0, 15.0);
+                KDL::Vector Kd_rot( 15.0,  15.0,  15.0);
+
+                // Compute the task-space control effort
+                KDL::Wrench F_desired;
+                for (int i = 0; i < 3; i++) {
+                    F_desired.force(i) = Kp_trans(i) * ex_(i) + Kd_trans(i) * (-xdot_(i));
+                    F_desired.torque(i) = Kp_rot(i) * ex_(i+3) + Kd_rot(i) * (-xdot_(i+3));
+                }
+                ROS_INFO("Task-space force: [Fx: %f, Fy: %f, Fz: %f]", 
+                        F_desired.force(0), F_desired.force(1), F_desired.force(2));
+                ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]", 
+                        F_desired.torque(0), F_desired.torque(1), F_desired.torque(2));
+
+                // Map task-space forces to joint torques (Corrected)
+                Eigen::VectorXd F_desired_vec(6);
+                F_desired_vec << F_desired.force.x(), F_desired.force.y(), F_desired.force.z(),
+                                F_desired.torque.x(), F_desired.torque.y(), F_desired.torque.z();
+                
+                tau_d_.data = J_.data.transpose() * F_desired_vec;
+
+                // Add Coriolis and Gravity compensation (Removed M * qddot_)--> inertial forces already taken into account inside F_desired end-effector : F = M*qddot;
+                tau_d_.data += C_.data + G_.data;
+
+                // Debugging output
+                ROS_INFO("Computed joint torques (tau_):");
+                for (int i = 0; i < n_joints_; i++) {
+                    ROS_INFO("tau_[%d]: %f", i, tau_d_(i));
+                }
+
+                
+
+
+                ROS_INFO("-----------------------------------------------------------------------");
+                ROS_INFO("");
+
+                // Apply torque commands
+                for (int i = 0; i < n_joints_; i++)
+                {
+                    joints_[i].setCommand(tau_d_(i));
+                }
+
+                // ********** Publish End-Effector Position and Velocity **********
+                std_msgs::Float64MultiArray end_effector_msg;
+                end_effector_msg.data.resize(6);
+                end_effector_msg.data[0] = x;         // x position
+                end_effector_msg.data[1] = y;         // y position
+                end_effector_msg.data[2] = z;         // z position
+                end_effector_msg.data[3] = xdot_(0);  // vx
+                end_effector_msg.data[4] = xdot_(1);  // vy
+                end_effector_msg.data[5] = xdot_(2);  // vz
+
+                pub_end_effector_pos_.publish(end_effector_msg);
+                    
+                
+                
+                break;
+            }    
+
+            default:
+                ROS_WARN("Invalid control mode selected: %d", control_mode);
+                
+                break;
+        }
+
+    
+        
+        
+        
+        
+    }
+
+
+
+    void stopping(const ros::Time &time)
+    {
+    }
+
+    void computePseudoInverse(const Eigen::MatrixXd &J, Eigen::MatrixXd &J_pinv, double tolerance = 1e-5) {
+        // Perform SVD decomposition
+        Eigen::JacobiSVD<Eigen::MatrixXd> svd(J, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        
+        // Get singular values
+        Eigen::VectorXd singularValues = svd.singularValues();
+        
+        // Create a vector to hold the inverted singular values
+        Eigen::VectorXd singularValuesInv(singularValues.size());
+        
+        for (int i = 0; i < singularValues.size(); ++i) {
+            if (singularValues(i) > tolerance) {
+                singularValuesInv(i) = 1.0 / singularValues(i);  // Invert if above tolerance
+            } else {
+                singularValuesInv(i) = 0.0;  // Set to zero if below tolerance
+            }
+        }
+        
+        // Construct the pseudo-inverse
+        J_pinv = svd.matrixV() * singularValuesInv.asDiagonal() * svd.matrixU().transpose();
+    }
+
+    
+
+  private:
+    // Others
+    double t;
+
+    // Joint handles
+    unsigned int n_joints_;
+    std::vector<std::string> joint_names_;
+    std::vector<hardware_interface::JointHandle> joints_;
+    std::vector<urdf::JointConstSharedPtr> joint_urdfs_;
+
+    // KDL
+    KDL::Tree kdl_tree_;
+    KDL::Chain kdl_chain_;
+
+    // KDL M, C, G
+    KDL::JntSpaceInertiaMatrix M_;
+    KDL::JntArray C_;
+    KDL::JntArray G_;
+    KDL::Vector gravity_;
+
+    // KDL solver
+    boost::scoped_ptr<KDL::ChainDynParam> id_solver_;
+    boost::scoped_ptr<KDL::ChainFkSolverPos_recursive> fk_pos_solver_;
+    boost::scoped_ptr<KDL::ChainJntToJacSolver> jnt_to_jac_solver_;
+    boost::scoped_ptr<KDL::ChainIkSolverVel_pinv> ik_vel_solver_;
+    
+    boost::scoped_ptr<KDL::ChainIkSolverPos_NR> ik_pos_solver_; // 
+
+    // Joint Space State
+    KDL::JntArray qd_, qd_dot_, qd_ddot_, q_cmd_dot;
+    KDL::JntArray qd_old_;
+    KDL::JntArray q_, qdot_;
+    KDL::JntArray e_, e_dot_, e_int_, e_cmd;
+
+    // Task Space State
+    KDL::Frame x_;               // Current end-effector pose
+    KDL::Frame xd_frame_;        // Desired end-effector pose
+    KDL::Twist ex_temp_;         // Task-space position error as KDL::Twist
+    KDL::Jacobian J_;            // Jacobian at current q_
+    KDL::Jacobian Jd_;           // Jacobian at desired qd_
+    Eigen::VectorXd xdot_;       // Current end-effector velocity
+    Eigen::VectorXd xd_dot_;     // Desired end-effector velocity from command
+    Eigen::VectorXd xd_dot_desired; // Desired task-space velocity with feedback
+    Eigen::VectorXd ex_;         // Task-space position error as Eigen vector
+    Eigen::VectorXd Kp_task_;    // Task-space proportional gains
+
+    Eigen::VectorXd qd_dot_task; // Desired joint velocities from task-space mapping
+
+    //task space 
+    Eigen::VectorXd xd, xd_dot;     // Desired task-space position (6 elements)
+
+
+
+    // Input
+    KDL::JntArray tau_d_;
+
+    // Gains
+    KDL::JntArray Kp_, Ki_, Kd_;
+
+    // Save the data
+    double SaveData_[SaveDataMax];
+
+    // ROS publisher
+    ros::Publisher pub_qd_, pub_q_, pub_e_;
+    ros::Publisher pub_SaveData_;
+
+    // ROS message
+    std_msgs::Float64MultiArray msg_qd_, msg_q_, msg_e_;
+    std_msgs::Float64MultiArray msg_SaveData_;
+
+    // ROS subscriber to /motion_command
+    ros::Subscriber sub_command_;
+    realtime_tools::RealtimeBuffer<Commands> command_buffer_;
+    
+  
+    // Control mode
+    realtime_tools::RealtimeBuffer<int> control_mode_buffer_;
+    ros::Subscriber sub_control_mode_;
+
+
+    //End effector postion sub
+    ros::Publisher pub_end_effector_pos_;
+
+    // ROS message for end-effector position and velocity
+    std_msgs::Float64MultiArray msg_end_effector_pos_;
+
+
+
+};
+
+
+
+}; // namespace arm_controllers
+
 
 PLUGINLIB_EXPORT_CLASS(arm_controllers::GravityCompController, controller_interface::ControllerBase)

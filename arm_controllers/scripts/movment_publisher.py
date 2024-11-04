@@ -13,8 +13,8 @@ custom_angles = [0] * 6  # Default custom angles for all 6 joints
 current_positions = [0] * 6  # Store current joint positions
 target_positions = [0] * 6  # Target positions for linear motion
 
-task_coords = [0]*6
-task_vel = [0]*6
+task_coords = [0] * 6
+task_vel = [0] * 6
 # For the new linear loop motion
 A_positions = [0] * 6  # Starting joint angles for position A
 B_positions = [0] * 6  # Ending joint angles for position B
@@ -26,16 +26,17 @@ def print_menu():
     rospy.loginfo("3 - Custom Angles")
     rospy.loginfo("4 - Linear Loop Motion between A and B (joint)")
     rospy.loginfo("5 - Task space")
-    rospy.loginfo("6 - Exit")
+    rospy.loginfo("6 - Set Task Space Coordinates")
+    rospy.loginfo("7 - Exit")
 
 def get_motion_choice():
-    choice = input("Enter your choice (1-6): ")
+    choice = input("Enter your choice (1-7): ")
     try:
         choice = int(choice)
-        if choice in [1, 2, 3, 4, 5, 6]:
+        if choice in [1, 2, 3, 4, 5, 6, 7]:
             return choice
         else:
-            rospy.loginfo("Invalid choice. Enter a number between 1 and 6.")
+            rospy.loginfo("Invalid choice. Enter a number between 1 and 7.")
             return None
     except ValueError:
         rospy.loginfo("Invalid input. Enter a number.")
@@ -45,7 +46,7 @@ def sinusoidal_motion(t):
     position = [math.radians(45 * math.sin(math.pi / 2 * t))] * 6
     velocity = [math.radians(45 * (math.pi / 2) * math.cos(math.pi / 2 * t))] * 6
     acceleration = [math.radians(-45 * (math.pi / 2)**2 * math.sin(math.pi / 2 * t))] * 6
-    return position, velocity, acceleration , task_coords, task_vel
+    return position, velocity, acceleration, task_coords, task_vel
 
 def linear_transition(current_position, target_position, t, dt):
     # Simple linear interpolation with constant velocity
@@ -67,7 +68,7 @@ def linear_transition(current_position, target_position, t, dt):
         position.append(pos)
         velocity_cmd.append(vel)
         acceleration.append(acc)
-    return position, velocity_cmd, acceleration , task_coords , task_vel
+    return position, velocity_cmd, acceleration, task_coords, task_vel
 
 def straight_line_motion(t, dt):
     global current_positions, target_positions
@@ -77,7 +78,7 @@ def fixed_motion():
     position = [math.radians(angle) for angle in [0.0, -25.0, 60.0, 0.0, 65.0, 0.0]]
     velocity = [0] * 6
     acceleration = [0] * 6
-    return position, velocity, acceleration , task_coords, task_vel
+    return position, velocity, acceleration, task_coords, task_vel
 
 def task_space_function(t, dt):
     # Trajectory parameters
@@ -171,30 +172,58 @@ def linear_loop_motion(t):
         positions.append(pos)
         velocities.append(vel)
         accelerations.append(acc)
-    return positions, velocities, accelerations , task_coords, task_vel
+    return positions, velocities, accelerations, task_coords, task_vel
+
+def set_task_space_coordinates():
+    global task_coords, task_vel
+    rospy.loginfo("Enter Task Space Coordinates (x, y, z):")
+    task_coords_input = []
+    for coord in ["x", "y", "z"]:
+        while True:
+            try:
+                value = float(input(f"Enter {coord}-coordinate (meters): "))
+                task_coords_input.append(value)
+                break
+            except ValueError:
+                rospy.loginfo("Invalid input. Please enter a valid number.")
+    
+    # Update task_coords with x, y, z values and reset velocities
+    task_coords[:3] = task_coords_input
+    task_coords[3:] = [0.0, 0.0, 0.0]  # Reset the remaining task_coords
+    task_vel = [0.0] * 6
+    rospy.loginfo(f"Task Space Coordinates set to x={task_coords[0]}, y={task_coords[1]}, z={task_coords[2]}")
 
 def publish_motion(pub, motion_type, t, dt):
-    global current_positions
+    global current_positions, task_coords, task_vel
     msg = Float64MultiArray()
-    positions, velocities, accelerations = [], [], []
 
     if motion_type == 1:  # Fixed Motion
-        positions, velocities, accelerations , task_coords, task_vel= fixed_motion()
-    elif motion_type == 2:  # Sinusoidal
-        positions, velocities, accelerations , task_coords, task_vel= sinusoidal_motion(t)
-    elif motion_type == 3:  # Linear
-        positions, velocities, accelerations , task_coords, task_vel= straight_line_motion(t, dt)
+        positions, velocities, accelerations, _, _ = fixed_motion()
+    elif motion_type == 2:  # Sinusoidal Motion
+        positions, velocities, accelerations, _, _ = sinusoidal_motion(t)
+    elif motion_type == 3:  # Custom Angles
+        positions, velocities, accelerations, _, _ = straight_line_motion(t, dt)
     elif motion_type == 4:  # Linear Loop Motion
-        positions, velocities, accelerations , task_coords, task_vel= linear_loop_motion(t)
+        positions, velocities, accelerations, _, _ = linear_loop_motion(t)
     elif motion_type == 5:  # Task space
-        positions, velocities, accelerations , task_coords, task_vel= task_space_function(t, dt)
+        positions, velocities, accelerations, _, _ = task_space_function(t, dt)
+    elif motion_type == 6:  # Set Task Space Coordinates
+        positions = [0.0] * 6  # All joint positions set to 0
+        velocities = [0.0] * 6
+        accelerations = [0.0] * 6
+    else:
+        rospy.loginfo("Unknown motion type. Defaulting to Fixed Motion.")
+        positions, velocities, accelerations, _, _ = fixed_motion()
 
-    # Update current positions directly after calculation
-    current_positions = positions
+    if motion_type == 6:
+        # Only task_coords and task_vel are populated
+        msg.data = positions + velocities + accelerations + task_coords + task_vel
+    else:
+        # Combine positions, velocities, accelerations, task_coords, and task_vel
+        msg.data = positions + velocities + accelerations + task_coords + task_vel
 
-    # Combine positions, velocities, and accelerations
-    msg.data = positions + velocities + accelerations + task_coords + task_vel
     pub.publish(msg)
+    
 
 def publisher_thread(pub):
     global current_motion
@@ -214,21 +243,25 @@ def menu_thread():
         choice = get_motion_choice()
 
         if choice is not None:
-            if choice == 6:
+            if choice == 7:
                 rospy.loginfo("Exiting...")
                 rospy.signal_shutdown("User requested exit.")
                 break
             elif choice == 3:
                 get_target_positions()
                 current_motion = choice
-                rospy.loginfo("Target positions set and motion changed to Linear Motion")
+                rospy.loginfo("Target positions set and motion changed to Custom Angles")
             elif choice == 4:
                 get_AB_positions()
                 current_motion = choice
                 rospy.loginfo("Positions A and B set and motion changed to Linear Loop Motion")
+            elif choice == 6:
+                set_task_space_coordinates()
+                current_motion = choice
+                rospy.loginfo("Task Space Coordinates set and motion changed to Set Task Space Coordinates")
             else:
                 current_motion = choice
-                rospy.loginfo(f"Motion changed to {current_motion}")
+                rospy.loginfo(f"Motion changed to option {choice}")
 
 def main():
     global current_motion
@@ -237,6 +270,7 @@ def main():
 
     # Start the publisher thread that continuously publishes the motion
     pub_thread = threading.Thread(target=publisher_thread, args=(pub,))
+    pub_thread.daemon = True  # Ensure thread exits when main program does
     pub_thread.start()
 
     # Start the menu thread to allow users to change motion types
