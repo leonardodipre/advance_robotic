@@ -496,7 +496,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 
                 // Desired end-effector pose
                 
-                KDL::Vector desired_position(0.6, -0.08 , 0.4);
+                KDL::Vector desired_position(x_desire, y_desire , 0.45);
                 //KDL::Vector desired_position(x_desire, y_desire, z_desire);
 
                
@@ -521,8 +521,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 
 
                 // Task-space PID gains
-                KDL::Vector Kp_trans(250, 250, 250);
-                KDL::Vector Kd_trans(40, 40, 40);
+                KDL::Vector Kp_trans(500, 500, 500); // Increase proportional gains
+                KDL::Vector Kd_trans(80, 80, 80); 
 
                 KDL::Vector Kp_rot( 15.0,  15.0, 15.0);
                 KDL::Vector Kd_rot( 15.0,  15.0,  15.0);

@@ -17,8 +17,8 @@ class CircularMotionMarker:
         # Parameters
         self.robot_x = 0.0  # X position of the robot (center of the circle)
         self.robot_y = 0.0  # Y position of the robot
-        self.radius = 0.5   # Radius of the circular path
-        self.angular_velocity = 0.1  # Speed of rotation (radians per second)
+        self.radius = 0.65   # Radius of the circular path
+        self.angular_velocity = 0.01  # Speed of rotation (radians per second)
         self.is_moving = False  # Start with marker stationary
         self.theta = 0.0  # Starting angle
 
