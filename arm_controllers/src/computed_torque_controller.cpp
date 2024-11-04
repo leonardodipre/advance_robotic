@@ -496,13 +496,16 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 
                 // Desired end-effector pose
                 
-                KDL::Vector desired_position(0.6, -0.08 , 0.2);
+                KDL::Vector desired_position(0.6, -0.08 , 0.4);
                 //KDL::Vector desired_position(x_desire, y_desire, z_desire);
 
                
 
-                KDL::Rotation desired_orientation = KDL::Rotation::RPY(0, 90 * D2R, 180 * D2R);
-                                                
+                KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
+
+                //KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI) * KDL::Rotation::RotZ( + M_PI / 2);
+
+                     
                 KDL::Frame desired_frame(desired_orientation, desired_position);
 
                 ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
@@ -518,11 +521,11 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 
 
                 // Task-space PID gains
-                KDL::Vector Kp_trans(100, 100, 100);
-                KDL::Vector Kd_trans(20, 20, 20);
+                KDL::Vector Kp_trans(250, 250, 250);
+                KDL::Vector Kd_trans(40, 40, 40);
 
-                KDL::Vector Kp_rot( 2.0,  2.0, 2.0);
-                KDL::Vector Kd_rot( 2.0,  2.0,  2.0);
+                KDL::Vector Kp_rot( 15.0,  15.0, 15.0);
+                KDL::Vector Kd_rot( 15.0,  15.0,  15.0);
 
                 // Compute the task-space control effort
                 KDL::Wrench F_desired;

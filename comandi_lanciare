@@ -58,11 +58,13 @@ rosrun arm_controllers arunco_vs.py
 
 rosrun arm_controllers aruco_traker_topic.py
 
+
 rosrun arm_controllers aruco_movment.py
 
-rosrun aruco_ros single
 
-Joints angles
+rosrun aruco_ros single.launch
+
+
 
 MOVING TARGETS
 
