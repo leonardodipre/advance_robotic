@@ -1,0 +1,21 @@
+<!-- wall_obstacle.sdf -->
+<sdf version="1.6">
+  <model name="wall_obstacle">
+    <static>true</static>
+    <link name="link">
+      <pose>0 0 0 0 0 0</pose>
+      
+      <visual name="visual">
+        <geometry>
+          <box>
+            <size>0.05 0.4 1</size> <!-- x=0.05, y=0.4, z=1 -->
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.8 0.8 0.8 1</ambient>
+          <diffuse>0.8 0.8 0.8 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

@@ -64,13 +64,18 @@ struct CylindricalObstacle {
     double influence_radius; // Radius within which the obstacle repels the robot
 };
 
+//Ve define the rectnale base on its center so height = 1.0 the z pose shoud be 0.5
+// center ( 0.5 , 0.0 , 0.5)
+    //  0.5 costant over x
+    //  0.5 on z as in the middel of the height
 struct RectangularObstacle {
-    KDL::Vector position;         // Center position of the rectangle (x, y, z)
-    double width;                 // Width of the rectangle along the x-axis
-    double height;                // Height of the rectangle along the y-axis
-    double influence_distance;    // Distance within which the obstacle repels the robot
-    double thickness;             // Thickness of the wall along the z-axis (optional)
+    KDL::Vector center;   // Center position of the rectangle (x, y, z)
+    double width;         // Size along the x-axis
+    double depth;         // Size along the y-axis
+    double height;        // Size along the z-axis
+    double safety_margin; // Optional safety margin
 };
+
 
 
 namespace arm_controllers
@@ -312,26 +317,27 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
         command_buffer_.initRT(initial_commands);
 
-
-        //Obstacle// Initialize obstacles
-        CylindricalObstacle obstacle;
-        obstacle.position = KDL::Vector(0.5, 0.0, 0.0); // Position of the base of the cylinder
-        obstacle.radius = 0.25;  // Cylinder radius
-        obstacle.height = 0.3;  // Cylinder height
-        obstacle.influence_radius = 0.30; // Influence radius for APF
-        obstacles_.push_back(obstacle);
-
-
         /*
-        RectangularObstacle wall;
-        wall.position = KDL::Vector(0.6, 0.0, 0.0);          // Center position of the wall
-        wall.width = 1.0;                                    // Width along x-axis
-        wall.height = 0.5;                                   // Height along y-axis
-        wall.thickness = 0.1;                                // Thickness along z-axis (optional)
-        wall.influence_distance = 0.6;                       // Influence distance for APF
-        obstacles_.push_back(wall);
+        //Obstacle// Initialize obstacles
+        CylindricalObstacle cylinder;
+        cylinder.position = KDL::Vector(0.5, 0.0, 0.0); // Position of the base of the cylinder
+        cylinder.radius = 0.25;  // Cylinder radius
+        cylinder.height = 0.3;   // Cylinder height
+        cylinder.influence_radius = 0.30; // Influence radius for APF
+        cylindrical_obstacles_.push_back(cylinder);
         */
-      
+    
+
+        // Define the wall as a rectangular obstacle
+        RectangularObstacle wall;
+        wall.center = KDL::Vector(0.5, 0.0, 0.5); // Center position
+        wall.width = 0.1;                         // Thickness along x-axis (e.g., 0.1 meters)
+        wall.depth = 0.4;                         // Depth along y-axis (from -0.2 to 0.2)
+        wall.height = 1.0;                        // Height along z-axis
+        wall.safety_margin = 0.05;                // Optional safety margin (adjust as needed)
+        rectangular_obstacles_.push_back(wall);
+        
+            
         return true;
     }
 
@@ -501,54 +507,112 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                         F_desired.force(0), F_desired.force(1), F_desired.force(2));
                 //ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]",  F_desired.torque(0), F_desired.torque(1), F_desired.torque(2));
 
+                
                 //Obsacole avoidance
                 KDL::Vector F_repulsive_total(0.0, 0.0, 0.0);
                 double eta = 1000.0;  // Repulsive gain
                 KDL::Vector x_current = end_effector_frame.p;
 
-                for (const auto& obs : obstacles_) {
-                    // Calculate the 3D distance vector between the end-effector and the obstacle
-                    KDL::Vector delta = x_current - obs.position;
-                    double x_distance = delta.x();
-                    double y_distance = delta.y();
-                    double z_distance = delta.z();
-                    
-                
-                   
 
-                    //ROS_INFO_STREAM("Distance from the obj: " << delta); 
+                //AVOIDACNE FOR CYLINDER
 
-                    // Calculate the full 3D distance
-                    double distance = delta.Norm();
+                if (!cylindrical_obstacles_.empty()) {
+    
 
-                    geometry_msgs::Vector3 distance_msg;
-                    
-                    distance_msg.x = x_distance;
-                    distance_msg.y = y_distance;
-                    distance_msg.z = z_distance;
+                    for (const auto& obs : cylindrical_obstacles_) {
+                        // Calculate the 3D distance vector between the end-effector and the obstacle
+                        KDL::Vector delta = x_current - obs.position;
+                        // Calculate the full 3D distance
+                        double distance = delta.Norm();
 
-                    // Publish the message
-                    distance_from_target.publish(distance_msg);
+                        //Message for plotting
+                        geometry_msgs::Vector3 distance_msg;
+                        distance_msg.x = delta.x();
+                        distance_msg.y = delta.y();
+                        distance_msg.z = delta.z();
+                        distance_from_target.publish(distance_msg);
 
 
-                    // Check if the obstacle is within its "influence radius" in 3D
-                    if (distance <= obs.influence_radius) {
-                        // Calculate the repulsive force magnitude based on the full 3D distance
-                        double repulsive_magnitude = eta * (1.0 / distance - 1.0 / obs.influence_radius) / (distance * distance);
+                        // Check if the obstacle is within its "influence radius" in 3D
+                        if (distance <= obs.influence_radius) {
+                            // Calculate the repulsive force magnitude based on the full 3D distance
+                            double repulsive_magnitude = eta * (1.0 / distance - 1.0 / obs.influence_radius) / (distance * distance);
 
-                        // Normalize the delta vector to get the direction of repulsion in 3D
-                        KDL::Vector direction = delta / distance;
+                            // Normalize the delta vector to get the direction of repulsion in 3D
+                            KDL::Vector direction = delta / distance;
 
-                        // Calculate the 3D repulsive force vector
-                        KDL::Vector F_rep = repulsive_magnitude * direction;
+                            // Calculate the 3D repulsive force vector
+                            KDL::Vector F_rep = repulsive_magnitude * direction;
 
-                        // Accumulate this force to the total repulsive force
-                        F_repulsive_total += F_rep;
+                            // Accumulate this force to the total repulsive force
+                            F_repulsive_total += F_rep;
+                        }
                     }
-                }
-
                 // Add the total 3D repulsive force to the desired force
                 F_desired.force += F_repulsive_total;
+               
+
+
+                }
+
+                //AVOIDACNE FOR RECTANGLE
+                if (!rectangular_obstacles_.empty()) {
+    
+                    // Obstacle avoidance for rectangular obstacles
+                    for (const auto& obs : rectangular_obstacles_) {
+                        KDL::Vector x_current = end_effector_frame.p;
+
+                        // Calculate the min and max bounds of the obstacle along each axis
+                        double x_min = obs.center.x() - (obs.width / 2.0) - obs.safety_margin;
+                        double x_max = obs.center.x() + (obs.width / 2.0) + obs.safety_margin;
+                        double y_min = obs.center.y() - (obs.depth / 2.0) - obs.safety_margin;
+                        double y_max = obs.center.y() + (obs.depth / 2.0) + obs.safety_margin;
+                        double z_min = obs.center.z() - (obs.height / 2.0) - obs.safety_margin;
+                        double z_max = obs.center.z() + (obs.height / 2.0) + obs.safety_margin;
+
+                        // Compute the closest point on the obstacle to the end-effector
+                        double x_closest = std::max(x_min, std::min(x_current.x(), x_max));
+                        double y_closest = std::max(y_min, std::min(x_current.y(), y_max));
+                        double z_closest = std::max(z_min, std::min(x_current.z(), z_max));
+
+                        KDL::Vector closest_point(x_closest, y_closest, z_closest);
+
+                        // Compute the distance between the end-effector and the closest point
+                        KDL::Vector delta = x_current - closest_point;
+                        double distance = delta.Norm();
+
+                        double epsilon = 1e-6;
+                        if (distance < epsilon) {
+                            distance = epsilon;
+                        }
+
+                        // Check if the end-effector is within the obstacle boundaries plus safety margin
+                        if (distance <= obs.safety_margin) {
+                            // Compute the repulsive force
+                            double eta = 1000.0; // Repulsive gain (adjust as needed)
+                            double repulsive_magnitude = eta * (1.0 / distance - 1.0 / obs.safety_margin) / (distance * distance);
+
+                            // Normalize delta to get the direction
+                            KDL::Vector direction = delta / distance;
+
+                            // Compute the repulsive force vector
+                            KDL::Vector F_rep = repulsive_magnitude * direction;
+
+                            // Accumulate this force to the total repulsive force
+                            F_repulsive_total += F_rep;
+                        }
+                    }
+                    // Add the total 3D repulsive force to the desired force
+                F_desired.force += F_repulsive_total;
+               
+
+                }
+
+
+                
+                
+
+                
 
                 // Fill the message for publishing
                 std_msgs::Float64MultiArray rep_force_msg;
@@ -558,7 +622,9 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 rep_force_msg.data[2] = F_repulsive_total.z();
 
                 pub_rep_force_.publish(rep_force_msg);
+                
 
+                
                 // Output the total force applied to the end-effector in task space, including the repulsive component
                 ROS_INFO("Task-space force after 3D obstacle avoidance: [Fx: %f, Fy: %f, Fz: %f]", 
                         F_desired.force(0), F_desired.force(1), F_desired.force(2));
@@ -577,14 +643,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 // Add Coriolis and Gravity compensation (Removed M * qddot_)--> inertial forces already taken into account inside F_desired end-effector : F = M*qddot;
                 tau_d_.data += C_.data + G_.data;
 
-                // Debugging output
-                /*
-                ROS_INFO("Computed joint torques (tau_):");
-                for (int i = 0; i < n_joints_; i++) {
-                    ROS_INFO("tau_[%d]: %f", i, tau_d_(i));
-                }
-                */
-
+                
                 
 
 
@@ -611,28 +670,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 pub_end_effector_pos_.publish(end_effector_msg);
                  
 
-                for (size_t i = 0; i < obstacles_.size(); ++i) {
-                    visualization_msgs::Marker influence_marker;
-                    influence_marker.header.frame_id = "base_link"; // Adjust frame as needed
-                    influence_marker.header.stamp = ros::Time::now();
-                    influence_marker.ns = "influence_fields";
-                    influence_marker.id = i;
-                    influence_marker.type = visualization_msgs::Marker::SPHERE;
-                    influence_marker.action = visualization_msgs::Marker::ADD;
-                    influence_marker.pose.position.x = obstacles_[i].position.x();
-                    influence_marker.pose.position.y = obstacles_[i].position.y();
-                    influence_marker.pose.position.z = obstacles_[i].position.z();
-                    influence_marker.pose.orientation.w = 1.0;
-                    influence_marker.scale.x = obstacles_[i].influence_radius * 2; // Diameter
-                    influence_marker.scale.y = obstacles_[i].influence_radius * 2;
-                    influence_marker.scale.z = obstacles_[i].height; // Match obstacle height
-                    influence_marker.color.a = 0.3; // Transparency
-                    influence_marker.color.r = 1.0;
-                    influence_marker.color.g = 0.0;
-                    influence_marker.color.b = 0.0;
-                    
-                    pub_influence_field_viz_.publish(influence_marker);
-                }
+               
                 
                 
                 
@@ -679,6 +717,8 @@ class GravityCompController : public controller_interface::Controller<hardware_i
         // Construct the pseudo-inverse
         J_pinv = svd.matrixV() * singularValuesInv.asDiagonal() * svd.matrixU().transpose();
     }
+
+    
 
     
 
@@ -771,6 +811,9 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
     //Obstacole
     std::vector<CylindricalObstacle> obstacles_;
+
+    std::vector<CylindricalObstacle> cylindrical_obstacles_;
+    std::vector<RectangularObstacle> rectangular_obstacles_;
 
     //publisher force obstacle
     ros::Publisher pub_rep_force_;
