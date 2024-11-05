@@ -1,0 +1,6 @@
+# Request part
+float32 threshold
+---
+# Response part
+bool success
+string message

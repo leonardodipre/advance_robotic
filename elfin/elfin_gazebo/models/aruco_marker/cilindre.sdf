@@ -5,21 +5,12 @@
     <pose>0 0 0 0 0 0</pose>
     <static>true</static>
     <link name="link">
-      <!-- Collision properties -->
-      <collision name="collision">
-        <geometry>
-          <cylinder>
-            <radius>0.5</radius>
-            <length>0.3</length>
-          </cylinder>
-        </geometry>
-      </collision>
-      <!-- Visual properties -->
+      <!-- Visual properties only -->
       <visual name="visual">
         <geometry>
           <cylinder>
-            <radius>0.5</radius>
-            <length>0.3</length>
+            <radius>0.25</radius>
+            <length>0.6</length>
           </cylinder>
         </geometry>
         <material>

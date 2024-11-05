@@ -85,3 +85,10 @@ ESERCIZIO 5 ( Obstical)
 
 rosrun arm_controllers potential_forces.py
 
+
+
+ rosrun plotjuggler plotjuggler -t ROS1
+
+
+
+

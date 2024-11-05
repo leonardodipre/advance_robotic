@@ -23,11 +23,10 @@
   <build_depend>dynamic_reconfigure</build_depend>
   <build_depend>roscpp</build_depend>
   <build_depend>std_msgs</build_depend>
-  <build_depend>rospy</build_depend> <!-- Added for Python script support -->
-
-  <!-- Message generation dependencies -->
+  <build_depend>rospy</build_depend>
   <build_depend>message_generation</build_depend>
-  <build_depend>geometry_msgs</build_depend> <!-- If used in messages -->
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>visualization_msgs</build_depend> <!-- Added -->
 
   <!-- Run dependencies -->
   <exec_depend>controller_interface</exec_depend>
@@ -39,12 +38,11 @@
   <exec_depend>dynamic_reconfigure</exec_depend>
   <exec_depend>roscpp</exec_depend>
   <exec_depend>std_msgs</exec_depend>
-  <exec_depend>rospy</exec_depend> <!-- Added for Python script support -->
-
-  <!-- Message runtime dependencies -->
+  <exec_depend>rospy</exec_depend>
   <exec_depend>message_runtime</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend> <!-- If used in messages -->
-
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend> <!-- Added -->
+  
   <exec_depend>python3</exec_depend>
 
   <export>

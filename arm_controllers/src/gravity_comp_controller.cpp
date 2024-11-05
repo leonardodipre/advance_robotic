@@ -30,6 +30,13 @@
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <limits>
+#include <ros/ros.h>
+#include <std_msgs/Float64.h>
+#include <geometry_msgs/Vector3.h>
+
+
+#include <visualization_msgs/Marker.h> // Ensure this is present
+
 
 
 #define PI 3.141592
@@ -284,6 +291,13 @@ class GravityCompController : public controller_interface::Controller<hardware_i
         //publisher of end effecot
         pub_end_effector_pos_ = n.advertise<std_msgs::Float64MultiArray>("/end_effector_pos", 1000);
 
+        //effor obj avoidance
+        pub_rep_force_ = n.advertise<std_msgs::Float64MultiArray>("/repulsive_force", 1000);
+
+        pub_influence_field_viz_ = n.advertise<visualization_msgs::Marker>("/influence_field_marker", 10);
+
+        distance_from_target = n.advertise<geometry_msgs::Vector3>("/distance_obj", 1000);
+
         
         control_mode_buffer_.writeFromNonRT(1);
 
@@ -301,10 +315,10 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
         //Obstacle// Initialize obstacles
         CylindricalObstacle obstacle;
-        obstacle.position = KDL::Vector(0.6, 0.0, 0.0); // Position of the base of the cylinder
-        obstacle.radius = 0.35;  // Cylinder radius
+        obstacle.position = KDL::Vector(0.5, 0.0, 0.0); // Position of the base of the cylinder
+        obstacle.radius = 0.25;  // Cylinder radius
         obstacle.height = 0.3;  // Cylinder height
-        obstacle.influence_radius = 0.4; // Influence radius for APF
+        obstacle.influence_radius = 0.30; // Influence radius for APF
         obstacles_.push_back(obstacle);
 
 
@@ -466,8 +480,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                     ex_(i) = ex_temp_(i);
                 }
 
-                ROS_INFO("Task-space position error (ex_): [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]",
-                        ex_(0), ex_(1), ex_(2), ex_(3), ex_(4), ex_(5));
+                //ROS_INFO("Task-space position error (ex_): [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]",ex_(0), ex_(1), ex_(2), ex_(3), ex_(4), ex_(5));
 
              
 
@@ -486,8 +499,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 }
                 ROS_INFO("Task-space force: [Fx: %f, Fy: %f, Fz: %f]", 
                         F_desired.force(0), F_desired.force(1), F_desired.force(2));
-                ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]", 
-                        F_desired.torque(0), F_desired.torque(1), F_desired.torque(2));
+                //ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]",  F_desired.torque(0), F_desired.torque(1), F_desired.torque(2));
 
                 //Obsacole avoidance
                 KDL::Vector F_repulsive_total(0.0, 0.0, 0.0);
@@ -497,9 +509,27 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 for (const auto& obs : obstacles_) {
                     // Calculate the 3D distance vector between the end-effector and the obstacle
                     KDL::Vector delta = x_current - obs.position;
+                    double x_distance = delta.x();
+                    double y_distance = delta.y();
+                    double z_distance = delta.z();
+                    
+                
+                   
+
+                    //ROS_INFO_STREAM("Distance from the obj: " << delta); 
 
                     // Calculate the full 3D distance
                     double distance = delta.Norm();
+
+                    geometry_msgs::Vector3 distance_msg;
+                    
+                    distance_msg.x = x_distance;
+                    distance_msg.y = y_distance;
+                    distance_msg.z = z_distance;
+
+                    // Publish the message
+                    distance_from_target.publish(distance_msg);
+
 
                     // Check if the obstacle is within its "influence radius" in 3D
                     if (distance <= obs.influence_radius) {
@@ -520,6 +550,15 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 // Add the total 3D repulsive force to the desired force
                 F_desired.force += F_repulsive_total;
 
+                // Fill the message for publishing
+                std_msgs::Float64MultiArray rep_force_msg;
+                rep_force_msg.data.resize(3);  // Resizing to hold the 3 force components
+                rep_force_msg.data[0] = F_repulsive_total.x();
+                rep_force_msg.data[1] = F_repulsive_total.y();
+                rep_force_msg.data[2] = F_repulsive_total.z();
+
+                pub_rep_force_.publish(rep_force_msg);
+
                 // Output the total force applied to the end-effector in task space, including the repulsive component
                 ROS_INFO("Task-space force after 3D obstacle avoidance: [Fx: %f, Fy: %f, Fz: %f]", 
                         F_desired.force(0), F_desired.force(1), F_desired.force(2));
@@ -539,16 +578,18 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 tau_d_.data += C_.data + G_.data;
 
                 // Debugging output
+                /*
                 ROS_INFO("Computed joint torques (tau_):");
                 for (int i = 0; i < n_joints_; i++) {
                     ROS_INFO("tau_[%d]: %f", i, tau_d_(i));
                 }
+                */
 
                 
 
 
                 ROS_INFO("-----------------------------------------------------------------------");
-                ROS_INFO("");
+                ROS_INFO("-");
 
                 // Apply torque commands
                 for (int i = 0; i < n_joints_; i++)
@@ -556,6 +597,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                     joints_[i].setCommand(tau_d_(i));
                 }
 
+                
                 // ********** Publish End-Effector Position and Velocity **********
                 std_msgs::Float64MultiArray end_effector_msg;
                 end_effector_msg.data.resize(6);
@@ -567,7 +609,31 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 end_effector_msg.data[5] = xdot_(2);  // vz
 
                 pub_end_effector_pos_.publish(end_effector_msg);
+                 
+
+                for (size_t i = 0; i < obstacles_.size(); ++i) {
+                    visualization_msgs::Marker influence_marker;
+                    influence_marker.header.frame_id = "base_link"; // Adjust frame as needed
+                    influence_marker.header.stamp = ros::Time::now();
+                    influence_marker.ns = "influence_fields";
+                    influence_marker.id = i;
+                    influence_marker.type = visualization_msgs::Marker::SPHERE;
+                    influence_marker.action = visualization_msgs::Marker::ADD;
+                    influence_marker.pose.position.x = obstacles_[i].position.x();
+                    influence_marker.pose.position.y = obstacles_[i].position.y();
+                    influence_marker.pose.position.z = obstacles_[i].position.z();
+                    influence_marker.pose.orientation.w = 1.0;
+                    influence_marker.scale.x = obstacles_[i].influence_radius * 2; // Diameter
+                    influence_marker.scale.y = obstacles_[i].influence_radius * 2;
+                    influence_marker.scale.z = obstacles_[i].height; // Match obstacle height
+                    influence_marker.color.a = 0.3; // Transparency
+                    influence_marker.color.r = 1.0;
+                    influence_marker.color.g = 0.0;
+                    influence_marker.color.b = 0.0;
                     
+                    pub_influence_field_viz_.publish(influence_marker);
+                }
+                
                 
                 
                 break;
@@ -705,6 +771,13 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
     //Obstacole
     std::vector<CylindricalObstacle> obstacles_;
+
+    //publisher force obstacle
+    ros::Publisher pub_rep_force_;
+    ros::Publisher distance_from_target;
+
+    ros::Publisher pub_influence_field_viz_;
+
 
 
 

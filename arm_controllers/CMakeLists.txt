@@ -1,7 +1,11 @@
-cmake_policy(SET CMP0048 NEW)
 cmake_minimum_required(VERSION 2.8.3)
+cmake_policy(SET CMP0048 NEW)
 project(arm_controllers)
 
+## Compile as C++11, supported in ROS Noetic
+add_compile_options(-std=c++11)
+
+# Find catkin and any catkin packages
 find_package(catkin REQUIRED COMPONENTS
   angles
   controller_interface
@@ -13,8 +17,9 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   rospy
-  message_generation      # Added
-  geometry_msgs          # Added if used in messages
+  message_generation
+  geometry_msgs
+  visualization_msgs  # Added visualization_msgs
 )
 
 # Dynamic reconfigure
@@ -22,28 +27,24 @@ generate_dynamic_reconfigure_options(
   cfg/PassivityControllerParams.cfg
 )
 
-# Message generation
+# Message files
 add_message_files(
   FILES
     ControllerJointState.msg
-    ArucoTracker.msg        # Added
+    ArucoTracker.msg
 )
 
+# Generate added messages and services with any dependencies listed here
 generate_messages(
   DEPENDENCIES
     std_msgs
-    geometry_msgs            # Added if used in messages
+    geometry_msgs  # Added if used in messages
 )
 
-# Include directories
-include_directories(
-  include
-  ${Boost_INCLUDE_DIR}
-  ${catkin_INCLUDE_DIRS}
-)
-
-# Declare the catkin package
+# Declare catkin package
 catkin_package(
+  INCLUDE_DIRS include
+  LIBRARIES ${PROJECT_NAME}
   CATKIN_DEPENDS
     angles
     controller_interface
@@ -54,8 +55,18 @@ catkin_package(
     dynamic_reconfigure
     roscpp
     std_msgs
-    message_runtime          # Added
-    geometry_msgs            # Added if used in messages
+    message_runtime
+    geometry_msgs
+    visualization_msgs  # Added visualization_msgs
+  DEPENDS
+    # system dependencies here
+)
+
+# Include directories
+include_directories(
+  include
+  ${Boost_INCLUDE_DIR}
+  ${catkin_INCLUDE_DIRS}
 )
 
 # Declare the library
@@ -68,18 +79,30 @@ add_library(${PROJECT_NAME}
   src/passivity_controller.cpp
 )
 
-# Link the library with catkin dependencies
-target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES})
+# Link the library with catkin and system dependencies
+target_link_libraries(${PROJECT_NAME}
+  ${catkin_LIBRARIES}
+)
+
+# Add dependencies for message generation and dynamic reconfigure
+add_dependencies(${PROJECT_NAME}
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
 
 # Declare the executable
 add_executable(motion_switcher_node src/motion_switcher_node.cpp)
 
 # Link the executable with catkin dependencies
-target_link_libraries(motion_switcher_node ${catkin_LIBRARIES})
+target_link_libraries(motion_switcher_node
+  ${catkin_LIBRARIES}
+)
 
-# Add dependencies for dynamic reconfigure and message generation
-add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-add_dependencies(motion_switcher_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+# Add dependencies for the executable
+add_dependencies(motion_switcher_node
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
 
 # Install C++ executables and libraries
 install(TARGETS ${PROJECT_NAME} motion_switcher_node
@@ -88,13 +111,13 @@ install(TARGETS ${PROJECT_NAME} motion_switcher_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+# Install header files
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
 # Install Python scripts
 catkin_install_python(PROGRAMS 
-  
   scripts/movment_publisher.py  # Correct the name if necessary
   scripts/controll_publisher.py
   scripts/potential_forces.py
