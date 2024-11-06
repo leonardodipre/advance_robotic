@@ -340,7 +340,41 @@ class GravityCompController : public controller_interface::Controller<hardware_i
         wall.safety_margin = 0.05;                // Optional safety margin (adjust as needed)
         rectangular_obstacles_.push_back(wall);
         
-            
+        //Retrive joint for ob avoidance
+        joint_segment_indices_.resize(n_joints_);
+        for (size_t j = 0; j < n_joints_; ++j) {
+            joint_segment_indices_[j] = -1; // Initialize with invalid index
+        }
+
+        const std::vector<KDL::Segment>& segments = kdl_chain_.segments;
+
+        for (size_t i = 0; i < segments.size(); ++i) {
+            const KDL::Segment& seg = segments[i];
+            const std::string& joint_name = seg.getJoint().getName();
+
+            for (size_t j = 0; j < joint_names_.size(); ++j) {
+                if (joint_names_[j] == joint_name) {
+                    joint_segment_indices_[j] = i;
+                    ROS_INFO("Joint %s corresponds to segment index %zu", joint_name.c_str(), i);
+                    break;
+                }
+            }
+        }
+
+        // Check that all joints have valid segment indices
+        for (size_t j = 0; j < n_joints_; ++j) {
+            if (joint_segment_indices_[j] == -1) {
+                ROS_ERROR("Could not find segment index for joint %s", joint_names_[j].c_str());
+                return false;
+            }
+        }
+
+         // Stampa la mappatura finale Joint -> Segmento
+        ROS_INFO("Mappatura finale Joint -> Segmento:");
+        for (size_t j = 0; j < n_joints_; ++j) {
+            ROS_INFO("Joint %zu (%s) -> Segmento %d", j, joint_names_[j].c_str(), joint_segment_indices_[j]);
+        }
+
         return true;
     }
 
@@ -451,125 +485,127 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
                }
 
-            case 7 :
-            {   
-                ROS_INFO("---------------------Inside Aruco Traker------------------------------");
+            case 7:
+            {
+                ROS_INFO("---------------------Inside Task-Space Control with Obstacle Avoidance------------------------------");
 
-                ////////////// END EFFECTOR POSITION TO BASE //////////
-
-              
+                // ------------------------ Task-Space Control ------------------------
 
                 // Compute End-effector position and Jacobian
                 KDL::Frame end_effector_frame;  
-                fk_pos_solver_->JntToCart(q_, end_effector_frame);
-                jnt_to_jac_solver_->JntToJac(q_, J_);
+                int fk_status = fk_pos_solver_->JntToCart(q_, end_effector_frame);
+               
 
-                // Extract position for debugging
+                // Compute Jacobian for end-effector
+                KDL::Jacobian J_ee(n_joints_);
+                J_ee.resize(n_joints_);
+                int jac_status = jnt_to_jac_solver_->JntToJac(q_, J_ee);
+               
+
+                // Extract current end-effector position
                 double x = end_effector_frame.p.x();
                 double y = end_effector_frame.p.y();
                 double z = end_effector_frame.p.z();
 
                 ROS_INFO("End-effector position: [x: %f, y: %f, z: %f]", x, y, z);
 
-                
-                // End-effector velocity
-                xdot_ = J_.data * qdot_.data;
-                
-                //ROS_INFO("End-effector velocity: [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]", xdot_(0), xdot_(1), xdot_(2), xdot_(3), xdot_(4), xdot_(5));
-        
-                //Desire Position in Task space
-                KDL::Vector desired_position(xd(0), xd(1) ,xd(2));
-               
-                //KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
-                KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
+                // Compute end-effector velocity
+                xdot_ = J_ee.data * qdot_.data;
+
+                // Desired Task-Space Position and Orientation
+                KDL::Vector desired_position(xd(0), xd(1), xd(2));
+                KDL::Rotation desired_orientation = KDL::Rotation::RotX(-1.5 * M_PI); // Example rotation
                 KDL::Frame desired_frame(desired_orientation, desired_position);
 
-                ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
+                // Compute Task-Space Error
+                KDL::Twist ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
                 for (int i = 0; i < 6; ++i) {
                     ex_(i) = ex_temp_(i);
                 }
 
-                //ROS_INFO("Task-space position error (ex_): [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]",ex_(0), ex_(1), ex_(2), ex_(3), ex_(4), ex_(5));
+                // ROS_INFO for debugging
+                // ROS_INFO("Task-space position error (ex_): [vx: %f, vy: %f, vz: %f, wx: %f, wy: %f, wz: %f]",
+                //          ex_(0), ex_(1), ex_(2), ex_(3), ex_(4), ex_(5));
 
-             
+                // Task-Space PID Gains
+                KDL::Vector Kp_trans(500, 500, 500); // Proportional gains for translation
+                KDL::Vector Kd_trans(80, 80, 80);    // Derivative gains for translation
 
-                // Task-space PID gains
-                KDL::Vector Kp_trans(500, 500, 500); // Increase proportional gains
-                KDL::Vector Kd_trans(80, 80, 80); 
+                KDL::Vector Kp_rot(15.0, 15.0, 15.0); // Proportional gains for rotation
+                KDL::Vector Kd_rot(15.0, 15.0, 15.0); // Derivative gains for rotation
 
-                KDL::Vector Kp_rot( 15.0,  15.0, 15.0);
-                KDL::Vector Kd_rot( 15.0,  15.0,  15.0);
-
-                // Compute the task-space control effort
+                // Compute Desired Task-Space Forces and Torques
                 KDL::Wrench F_desired;
                 for (int i = 0; i < 3; i++) {
                     F_desired.force(i) = Kp_trans(i) * ex_(i) + Kd_trans(i) * (-xdot_(i));
-                    F_desired.torque(i) = Kp_rot(i) * ex_(i+3) + Kd_rot(i) * (-xdot_(i+3));
+                    F_desired.torque(i) = Kp_rot(i) * ex_(i + 3) + Kd_rot(i) * (-xdot_(i + 3));
                 }
-                ROS_INFO("Task-space force: [Fx: %f, Fy: %f, Fz: %f]", 
-                        F_desired.force(0), F_desired.force(1), F_desired.force(2));
-                //ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]",  F_desired.torque(0), F_desired.torque(1), F_desired.torque(2));
 
-                
-                //Obsacole avoidance
-                KDL::Vector F_repulsive_total(0.0, 0.0, 0.0);
-                double eta = 1000.0;  // Repulsive gain
-                KDL::Vector x_current = end_effector_frame.p;
+                // ROS_INFO("Task-space force: [Fx: %f, Fy: %f, Fz: %f]", 
+                //          F_desired.force(0), F_desired.force(1), F_desired.force(2));
 
+                // ------------------------ Obstacle Avoidance for All Joints ------------------------
 
-                //AVOIDACNE FOR CYLINDER
+                // Initialize the total obstacle avoidance torque
+                Eigen::VectorXd tau_obstacle_total = Eigen::VectorXd::Zero(n_joints_);
 
-                if (!cylindrical_obstacles_.empty()) {
-    
+                // Loop through each joint to compute its position and corresponding repulsive force
+                for (int j = 0; j < n_joints_; ++j)
+                {
+                    int segment_idx = joint_segment_indices_[j];
+                    
 
-                    for (const auto& obs : cylindrical_obstacles_) {
-                        // Calculate the 3D distance vector between the end-effector and the obstacle
-                        KDL::Vector delta = x_current - obs.position;
-                        // Calculate the full 3D distance
+                    // Compute the frame (position and orientation) of the current joint
+                    KDL::Frame joint_frame;
+                    fk_pos_solver_->JntToCart(q_, joint_frame, segment_idx);
+                   
+
+                    // Compute the Jacobian for the current joint
+                    KDL::Jacobian J_link(n_joints_);
+                    J_link.resize(n_joints_);
+                    jnt_to_jac_solver_->JntToJac(q_, J_link, segment_idx);
+                    
+
+                    // Get the position of the current joint
+                    KDL::Vector joint_position = joint_frame.p;
+
+                    // Initialize the repulsive force for this joint
+                    KDL::Vector F_repulsive_joint(0.0, 0.0, 0.0);
+
+                    // -------------------- Obstacle Avoidance for Cylindrical Obstacles --------------------
+                    for (const auto& obs : cylindrical_obstacles_)
+                    {
+                        // Compute the vector from obstacle to joint
+                        KDL::Vector delta = joint_position - obs.position;
                         double distance = delta.Norm();
 
-                        //Message for plotting
-                        arm_controllers::ExtendedVector3 distance_msg;
-                        distance_msg.vector.x = delta.x();
-                        distance_msg.vector.y = delta.y();
-                        distance_msg.vector.z = delta.z();
-                        distance_msg.distance = distance;
-                        distance_from_target.publish(distance_msg);
-
+                        // Avoid division by zero
                         double epsilon = 1e-6;
-                        if (distance < epsilon) {
+                        if (distance < epsilon)
                             distance = epsilon;
-                        }
-                        // Check if the obstacle is within its "influence radius" in 3D
-                        if (distance <= obs.influence_radius) {
-                            // Calculate the repulsive force magnitude based on the full 3D distance
+
+                        // Check if within influence radius
+                        if (distance <= obs.influence_radius)
+                        {
+                            // Compute repulsive force magnitude
+                            double eta = 1000.0; // Repulsive gain (adjust as needed)
                             double repulsive_magnitude = eta * (1.0 / distance - 1.0 / obs.influence_radius) / (distance * distance);
 
-                            // Normalize the delta vector to get the direction of repulsion in 3D
+                            // Compute direction of repulsion
                             KDL::Vector direction = delta / distance;
 
-                            // Calculate the 3D repulsive force vector
+                            // Compute repulsive force vector
                             KDL::Vector F_rep = repulsive_magnitude * direction;
 
-                            // Accumulate this force to the total repulsive force
-                            F_repulsive_total += F_rep;
+                            // Accumulate the repulsive force
+                            F_repulsive_joint += F_rep;
                         }
                     }
-                // Add the total 3D repulsive force to the desired force
-                F_desired.force += F_repulsive_total;
-               
 
-
-                }
-
-                //AVOIDACNE FOR RECTANGLE
-                if (!rectangular_obstacles_.empty()) {
-    
-                    // Obstacle avoidance for rectangular obstacles
-                    for (const auto& obs : rectangular_obstacles_) {
-                        KDL::Vector x_current = end_effector_frame.p;
-
-                        // Calculate the min and max bounds of the obstacle along each axis
+                    // -------------------- Obstacle Avoidance for Rectangular Obstacles --------------------
+                    for (const auto& obs : rectangular_obstacles_)
+                    {
+                        // Compute the closest point on the rectangular obstacle to the joint
                         double x_min = obs.center.x() - (obs.width / 2.0) - obs.safety_margin;
                         double x_max = obs.center.x() + (obs.width / 2.0) + obs.safety_margin;
                         double y_min = obs.center.y() - (obs.depth / 2.0) - obs.safety_margin;
@@ -577,137 +613,123 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                         double z_min = obs.center.z() - (obs.height / 2.0) - obs.safety_margin;
                         double z_max = obs.center.z() + (obs.height / 2.0) + obs.safety_margin;
 
-                        // Compute the closest point on the obstacle to the end-effector
-                        double x_closest = std::max(x_min, std::min(x_current.x(), x_max));
-                        double y_closest = std::max(y_min, std::min(x_current.y(), y_max));
-                        double z_closest = std::max(z_min, std::min(x_current.z(), z_max));
+                        double x_closest = std::max(x_min, std::min(joint_position.x(), x_max));
+                        double y_closest = std::max(y_min, std::min(joint_position.y(), y_max));
+                        double z_closest = std::max(z_min, std::min(joint_position.z(), z_max));
 
                         KDL::Vector closest_point(x_closest, y_closest, z_closest);
 
-                        // Compute the distance between the end-effector and the closest point
-                        KDL::Vector delta = x_current - closest_point;
+                        // Compute the vector from the closest point to the joint
+                        KDL::Vector delta = joint_position - closest_point;
                         double distance = delta.Norm();
 
-                        
-                        arm_controllers::ExtendedVector3 distance_msg;
-                        distance_msg.vector.x = delta.x();
-                        distance_msg.vector.y = delta.y();
-                        distance_msg.vector.z = delta.z();
-                        distance_msg.distance = distance;
-                       
-                        distance_from_target.publish(distance_msg);
-
-                        //for not divinding by 0
+                        // Avoid division by zero
                         double epsilon = 1e-6;
-                        if (distance < epsilon) {
+                        if (distance < epsilon)
                             distance = epsilon;
-                        }
 
-                        // Check if the end-effector is within the obstacle boundaries plus safety margin
-                        if (distance <= obs.safety_margin) {
-                            // Compute the repulsive force
+                        // Check if within safety margin
+                        if (distance <= obs.safety_margin)
+                        {
+                            // Compute repulsive force magnitude
                             double eta = 100.0; // Repulsive gain (adjust as needed)
                             double repulsive_magnitude = eta * (1.0 / distance - 1.0 / obs.safety_margin) / (distance * distance);
 
-                            // Normalize delta to get the direction
+                            // Compute direction of repulsion
                             KDL::Vector direction = delta / distance;
 
-                            // Compute the repulsive force vector
+                            // Compute repulsive force vector
                             KDL::Vector F_rep = repulsive_magnitude * direction;
 
-                            //Tangential force to not get stuck
-                            KDL::Vector ref_vector(0.0, 0.0, 1.0); // Upward direction
+                            // Optionally, add a tangential force to prevent the robot from getting stuck
+                            // Define a reference vector (e.g., upward direction)
+                            KDL::Vector ref_vector(0.0, 0.0, 1.0);
 
-                            // Compute the tangential direction as cross product
+                            // Compute the tangential direction as the cross product of direction and reference vector
                             KDL::Vector tangential_direction = direction * ref_vector; // Cross product
 
-                            // Check if 'direction' is parallel to 'ref_vector' and adjust if necessary
-                            if (fabs(KDL::dot(direction, ref_vector)) >= 0.99) {  // Adjust threshold as needed
+                            // Check if 'direction' is parallel to 'ref_vector' to avoid zero tangential force
+                            if (fabs(KDL::dot(direction, ref_vector)) >= 0.99) // Adjust threshold as needed
+                            {
                                 ref_vector = KDL::Vector(1.0, 0.0, 0.0); // Use x-axis if parallel
+                                tangential_direction = direction * ref_vector;
                             }
+
                             // Normalize the tangential direction
                             double tangential_norm = tangential_direction.Norm();
-                            if (tangential_norm > epsilon) {
+                            if (tangential_norm > epsilon)
+                            {
                                 tangential_direction = tangential_direction / tangential_norm;
 
-                                // Tangential force magnitude (adjust gain as needed)
+                                // Define tangential gain
                                 double tangential_gain = 1000.0; // Adjust this gain as needed
+
+                                // Compute tangential force
                                 KDL::Vector F_tangential = tangential_gain * tangential_direction;
 
+                                // Accumulate the tangential force
                                 F_rep += F_tangential;
-                                
 
-                                //send tangential force over topic
-                                std_msgs::Float64MultiArray rep_force_tang_msg;
-                                rep_force_tang_msg.data.resize(3);  // Resizing to hold the 3 force components
-                                rep_force_tang_msg.data[0] = F_tangential.x();
-                                rep_force_tang_msg.data[1] = F_tangential.y();
-                                rep_force_tang_msg.data[2] = F_tangential.z();
-
-                                pub_rep_force_tangential.publish(rep_force_tang_msg);
-                
+                                // Publish the tangential force for visualization or debugging
+                                std_msgs::Float64MultiArray rep_force_tangential_msg;
+                                rep_force_tangential_msg.data.resize(3);
+                                rep_force_tangential_msg.data[0] = F_tangential.x();
+                                rep_force_tangential_msg.data[1] = F_tangential.y();
+                                rep_force_tangential_msg.data[2] = F_tangential.z();
+                                pub_rep_force_tangential.publish(rep_force_tangential_msg);
                             }
-                            
 
-                            // Accumulate this force to the total repulsive force
-                            F_repulsive_total += F_rep;
+                            // Accumulate the repulsive force
+                            F_repulsive_joint += F_rep;
                         }
                     }
-                    // Add the total 3D repulsive force to the desired force
-                F_desired.force += F_repulsive_total;
-               
 
+                    // -------------------- Map Repulsive Forces to Joint Torques --------------------
+
+                    // Convert KDL::Vector to Eigen::VectorXd (only force components, ignoring torque for simplicity)
+                    Eigen::VectorXd F_repulsive_vec(6);
+                    F_repulsive_vec << F_repulsive_joint.x(), F_repulsive_joint.y(), F_repulsive_joint.z(),
+                                    0.0, 0.0, 0.0; // Assuming no torque from obstacles
+
+                    // Map the spatial force to joint torques using the Jacobian transpose
+                    Eigen::VectorXd tau_obstacle_joint = J_link.data.transpose() * F_repulsive_vec;
+
+                    // Accumulate the torques
+                    tau_obstacle_total += tau_obstacle_joint;
+
+                    // -------------------- (Optional) Publish Repulsive Force for Each Joint --------------------
+                    std_msgs::Float64MultiArray rep_force_msg;
+                    rep_force_msg.data.resize(3);
+                    rep_force_msg.data[0] = F_repulsive_joint.x();
+                    rep_force_msg.data[1] = F_repulsive_joint.y();
+                    rep_force_msg.data[2] = F_repulsive_joint.z();
+                    pub_rep_force_.publish(rep_force_msg);
                 }
 
+                // ------------------------ Combine Task-Space Control and Obstacle Avoidance ------------------------
 
-                
-
-                
-
-                // Fill the message for publishing
-                std_msgs::Float64MultiArray rep_force_msg;
-                rep_force_msg.data.resize(3);  // Resizing to hold the 3 force components
-                rep_force_msg.data[0] = F_repulsive_total.x();
-                rep_force_msg.data[1] = F_repulsive_total.y();
-                rep_force_msg.data[2] = F_repulsive_total.z();
-
-                pub_rep_force_.publish(rep_force_msg);
-                
-
-                
-                // Output the total force applied to the end-effector in task space, including the repulsive component
-                ROS_INFO("Task-space force after 3D obstacle avoidance: [Fx: %f, Fy: %f, Fz: %f]", 
-                        F_desired.force(0), F_desired.force(1), F_desired.force(2));
-
-
-
-
-
-                // Map task-space forces to joint torques (Corrected)
+                // 1. Map Task-Space Forces to Joint Torques
                 Eigen::VectorXd F_desired_vec(6);
                 F_desired_vec << F_desired.force.x(), F_desired.force.y(), F_desired.force.z(),
                                 F_desired.torque.x(), F_desired.torque.y(), F_desired.torque.z();
-                
-                tau_d_.data = J_.data.transpose() * F_desired_vec;
 
-                // Add Coriolis and Gravity compensation (Removed M * qddot_)--> inertial forces already taken into account inside F_desired end-effector : F = M*qddot;
-                tau_d_.data += C_.data + G_.data;
+                // Compute joint torques from task-space forces using end-effector Jacobian
+                Eigen::VectorXd tau_task = J_ee.data.transpose() * F_desired_vec;
 
-                
-                
+                // 2. Compute Inverse Dynamics for Compensation (Coriolis and Gravity)
+                // tau_task already includes Coriolis and Gravity in your original code, but ensure it's correctly applied
+                tau_task += C_.data + G_.data;
 
+                // 3. Combine Task-Space Torques with Obstacle Avoidance Torques
+                tau_d_.data = tau_task + tau_obstacle_total;
 
-                ROS_INFO("-----------------------------------------------------------------------");
-                ROS_INFO("-");
-
-                // Apply torque commands
+                // ------------------------ Apply Torque Commands ------------------------
                 for (int i = 0; i < n_joints_; i++)
                 {
                     joints_[i].setCommand(tau_d_(i));
                 }
 
-                
-                // ********** Publish End-Effector Position and Velocity **********
+                // ------------------------ Publish End-Effector Position and Velocity ------------------------
                 std_msgs::Float64MultiArray end_effector_msg;
                 end_effector_msg.data.resize(6);
                 end_effector_msg.data[0] = x;         // x position
@@ -718,14 +740,16 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 end_effector_msg.data[5] = xdot_(2);  // vz
 
                 pub_end_effector_pos_.publish(end_effector_msg);
-                 
 
-               
-                
-                
-                
+                // ------------------------ (Optional) Publish Total Repulsive Force ------------------------
+                // You can aggregate and publish the total repulsive force if needed
+
+                ROS_INFO("-----------------------------------------------------------------------");
+                ROS_INFO("-");
+
                 break;
-            }    
+            }
+
 
             default:
                 ROS_WARN("Invalid control mode selected: %d", control_mode);
@@ -872,7 +896,8 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
     ros::Publisher pub_influence_field_viz_;
     
-
+    //Position of joint
+    std::vector<int> joint_segment_indices_;
 
 
 
