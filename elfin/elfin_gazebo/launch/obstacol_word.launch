@@ -1,0 +1,43 @@
+<launch>
+  <!-- Define the controller argument with a default value -->
+  <arg name="controller" default="gravity_comp_controller" />
+
+  
+  <!-- Set the Gazebo model path to include custom models and default Gazebo models -->
+  <env name="GAZEBO_MODEL_PATH" value="$(find elfin_gazebo)/models:$(optenv GAZEBO_MODEL_PATH)" />
+
+  <!-- Include the Gazebo empty world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch" />
+
+  <!-- Robot Model -->
+  <param name="robot_description" command="$(find xacro)/xacro --inorder '$(find elfin_description)/urdf/elfin3.urdf.xacro'" />
+
+  <!-- Spawn the robot in Gazebo -->
+  <node name="urdf_spawner" pkg="gazebo_ros" type="spawn_model" respawn="false" output="screen"
+        args="-urdf -model elfin3 -param robot_description" />
+
+  <!-- Load the controller configurations from a yaml file -->
+  <rosparam file="$(find elfin_gazebo)/config/$(arg controller).yaml" command="load" />
+
+  <!-- Spawner for the controllers -->
+  <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+        output="screen" ns="/elfin" args="joint_state_controller $(arg controller)" />
+
+  <!-- State Publisher -->
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" ns="/elfin" />
+
+  <!--
+  <node name="Cilinder" pkg="gazebo_ros" type="spawn_model" output="screen"
+    args="-sdf -model cilindre -file /root/src/elfin/elfin_gazebo/models/aruco_marker/cilindre.sdf -x 0.50 -y 0 -z 0" />
+  -->
+
+  <node name="wall" pkg="gazebo_ros" type="spawn_model" output="screen"
+    args="-sdf -model wall -file /root/src/elfin/elfin_gazebo/models/aruco_marker/wall.sdf -x 0.5 -y -0.2 -z 0" />
+
+  
+
+
+
+</launch>
+
+

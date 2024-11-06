@@ -32,15 +32,7 @@
 
   <!-- Run the Circular Motion Node for the ArUco Marker -->
   <node pkg="arm_controllers" type="aruco_movment.py" name="aruco_movment_node" output="screen"/>
-  
-  <!--
-  <node name="Cilinder" pkg="gazebo_ros" type="spawn_model" output="screen"
-    args="-sdf -model cilindre -file /root/src/elfin/elfin_gazebo/models/aruco_marker/cilindre.sdf -x 0.50 -y 0 -z 0" />
-  -->
-
-  <node name="wall" pkg="gazebo_ros" type="spawn_model" output="screen"
-    args="-sdf -model wall -file /root/src/elfin/elfin_gazebo/models/aruco_marker/wall.sdf -x 0.5 -y -0.2 -z 0" />
-
+ 
   
 
 

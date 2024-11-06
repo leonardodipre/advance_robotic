@@ -32,13 +32,14 @@ add_message_files(
   FILES
     ControllerJointState.msg
     ArucoTracker.msg
+    ExtendedVector3.msg  # Define custom message here
 )
 
 # Generate added messages and services with any dependencies listed here
 generate_messages(
   DEPENDENCIES
     std_msgs
-    geometry_msgs  # Added if used in messages
+    geometry_msgs
 )
 
 # Declare catkin package
@@ -57,9 +58,7 @@ catkin_package(
     std_msgs
     message_runtime
     geometry_msgs
-    visualization_msgs  # Added visualization_msgs
-  DEPENDS
-    # system dependencies here
+    visualization_msgs
 )
 
 # Include directories

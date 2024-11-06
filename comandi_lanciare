@@ -85,9 +85,10 @@ ESERCIZIO 5 ( Obstical)
 
 rosrun arm_controllers potential_forces.py
 
+roslaunch elfin_gazebo obstacol_word.launch controller:=gravity_comp_controller
 
 
- rosrun plotjuggler plotjuggler -t ROS1
+rosrun plotjuggler plotjuggler -t ROS1
 
 
 

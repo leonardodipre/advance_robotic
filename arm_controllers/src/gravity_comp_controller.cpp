@@ -36,7 +36,7 @@
 
 
 #include <visualization_msgs/Marker.h> // Ensure this is present
-
+#include "arm_controllers/ExtendedVector3.h"
 
 
 #define PI 3.141592
@@ -301,8 +301,8 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
         pub_influence_field_viz_ = n.advertise<visualization_msgs::Marker>("/influence_field_marker", 10);
 
-        distance_from_target = n.advertise<geometry_msgs::Vector3>("/distance_obj", 1000);
-
+        distance_from_target = n.advertise<arm_controllers::ExtendedVector3>("/distance_obj", 1000);
+        
         
         control_mode_buffer_.writeFromNonRT(1);
 
@@ -526,13 +526,17 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                         double distance = delta.Norm();
 
                         //Message for plotting
-                        geometry_msgs::Vector3 distance_msg;
-                        distance_msg.x = delta.x();
-                        distance_msg.y = delta.y();
-                        distance_msg.z = delta.z();
+                        arm_controllers::ExtendedVector3 distance_msg;
+                        distance_msg.vector.x = delta.x();
+                        distance_msg.vector.y = delta.y();
+                        distance_msg.vector.z = delta.z();
+                        distance_msg.distance = distance;
                         distance_from_target.publish(distance_msg);
 
-
+                        double epsilon = 1e-6;
+                        if (distance < epsilon) {
+                            distance = epsilon;
+                        }
                         // Check if the obstacle is within its "influence radius" in 3D
                         if (distance <= obs.influence_radius) {
                             // Calculate the repulsive force magnitude based on the full 3D distance
@@ -581,6 +585,16 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                         KDL::Vector delta = x_current - closest_point;
                         double distance = delta.Norm();
 
+                        
+                        arm_controllers::ExtendedVector3 distance_msg;
+                        distance_msg.vector.x = delta.x();
+                        distance_msg.vector.y = delta.y();
+                        distance_msg.vector.z = delta.z();
+                        distance_msg.distance = distance;
+                       
+                        distance_from_target.publish(distance_msg);
+
+                        //for not divinding by 0
                         double epsilon = 1e-6;
                         if (distance < epsilon) {
                             distance = epsilon;
