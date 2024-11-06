@@ -299,6 +299,9 @@ class GravityCompController : public controller_interface::Controller<hardware_i
         //effor obj avoidance
         pub_rep_force_ = n.advertise<std_msgs::Float64MultiArray>("/repulsive_force", 1000);
 
+        //tangential force for walls
+        pub_rep_force_tangential  = n.advertise<std_msgs::Float64MultiArray>("/repulsive_force_tangential", 1000);
+
         pub_influence_field_viz_ = n.advertise<visualization_msgs::Marker>("/influence_field_marker", 10);
 
         distance_from_target = n.advertise<arm_controllers::ExtendedVector3>("/distance_obj", 1000);
@@ -603,7 +606,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                         // Check if the end-effector is within the obstacle boundaries plus safety margin
                         if (distance <= obs.safety_margin) {
                             // Compute the repulsive force
-                            double eta = 1000.0; // Repulsive gain (adjust as needed)
+                            double eta = 100.0; // Repulsive gain (adjust as needed)
                             double repulsive_magnitude = eta * (1.0 / distance - 1.0 / obs.safety_margin) / (distance * distance);
 
                             // Normalize delta to get the direction
@@ -611,6 +614,40 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
                             // Compute the repulsive force vector
                             KDL::Vector F_rep = repulsive_magnitude * direction;
+
+                            //Tangential force to not get stuck
+                            KDL::Vector ref_vector(0.0, 0.0, 1.0); // Upward direction
+
+                            // Compute the tangential direction as cross product
+                            KDL::Vector tangential_direction = direction * ref_vector; // Cross product
+
+                            // Check if 'direction' is parallel to 'ref_vector' and adjust if necessary
+                            if (fabs(KDL::dot(direction, ref_vector)) >= 0.99) {  // Adjust threshold as needed
+                                ref_vector = KDL::Vector(1.0, 0.0, 0.0); // Use x-axis if parallel
+                            }
+                            // Normalize the tangential direction
+                            double tangential_norm = tangential_direction.Norm();
+                            if (tangential_norm > epsilon) {
+                                tangential_direction = tangential_direction / tangential_norm;
+
+                                // Tangential force magnitude (adjust gain as needed)
+                                double tangential_gain = 1000.0; // Adjust this gain as needed
+                                KDL::Vector F_tangential = tangential_gain * tangential_direction;
+
+                                F_rep += F_tangential;
+                                
+
+                                //send tangential force over topic
+                                std_msgs::Float64MultiArray rep_force_tang_msg;
+                                rep_force_tang_msg.data.resize(3);  // Resizing to hold the 3 force components
+                                rep_force_tang_msg.data[0] = F_tangential.x();
+                                rep_force_tang_msg.data[1] = F_tangential.y();
+                                rep_force_tang_msg.data[2] = F_tangential.z();
+
+                                pub_rep_force_tangential.publish(rep_force_tang_msg);
+                
+                            }
+                            
 
                             // Accumulate this force to the total repulsive force
                             F_repulsive_total += F_rep;
@@ -623,7 +660,6 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                 }
 
 
-                
                 
 
                 
@@ -831,9 +867,11 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
     //publisher force obstacle
     ros::Publisher pub_rep_force_;
+    ros::Publisher pub_rep_force_tangential;
     ros::Publisher distance_from_target;
 
     ros::Publisher pub_influence_field_viz_;
+    
 
 
 
