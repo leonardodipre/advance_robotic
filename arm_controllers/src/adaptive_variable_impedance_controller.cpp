@@ -37,6 +37,8 @@ namespace arm_controllers{
 
 		bool init(hardware_interface::EffortJointInterface* hw, ros::NodeHandle &n)
   		{	
+
+			ROS_ERROR("HEY I HAVE A DIFFERENT NAME CHE FIGATA");
 			// List of controlled joints
     		if (!n.getParam("joints", joint_names_))
 			{

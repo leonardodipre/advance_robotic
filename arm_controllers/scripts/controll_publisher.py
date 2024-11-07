@@ -13,11 +13,12 @@ Select control mode:
 5: Kinematic Task Space
 6: Cartesian Coordinates
 7: Aruco Tracker
+8: Task space smooth transition
 Enter your choice: """
     while not rospy.is_shutdown():
         try:
             input_mode = int(input(menu_options))
-            if 1 <= input_mode <= 7:
+            if 1 <= input_mode <= 8:
                 mode_container['mode'] = input_mode
             else:
                 print("Invalid mode selected. Please select a number between 1 and 7.")
@@ -33,7 +34,7 @@ Enter your choice: """
 def main():
     rospy.init_node('control_publisher')
     mode_pub = rospy.Publisher('/control_mode', Int32, queue_size=10)
-    rate = rospy.Rate(200)  # 200 Hz
+    rate = rospy.Rate(100)  # 100 Hz
 
     mode_container = {'mode': 1}
 
