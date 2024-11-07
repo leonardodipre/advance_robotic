@@ -8,7 +8,7 @@
       <visual name="visual">
         <geometry>
           <box>
-            <size>0.05 0.4 1</size> <!-- x=0.05, y=0.4, z=1 -->
+            <size>0.7 1.0 1</size> <!-- x=0.05, y=(from -0.5 to 0.5), z=1 -->
           </box>
         </geometry>
         <material>

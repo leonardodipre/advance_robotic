@@ -10,7 +10,7 @@
         <geometry>
           <cylinder>
             <radius>0.25</radius>
-            <length>0.6</length>
+            <length>0.3</length>
           </cylinder>
         </geometry>
         <material>

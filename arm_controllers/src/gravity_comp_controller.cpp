@@ -296,16 +296,25 @@ class GravityCompController : public controller_interface::Controller<hardware_i
         //publisher of end effecot
         pub_end_effector_pos_ = n.advertise<std_msgs::Float64MultiArray>("/end_effector_pos", 1000);
 
-        //effor obj avoidance
-        pub_rep_force_ = n.advertise<std_msgs::Float64MultiArray>("/repulsive_force", 1000);
-
-        //tangential force for walls
-        pub_rep_force_tangential  = n.advertise<std_msgs::Float64MultiArray>("/repulsive_force_tangential", 1000);
+      
 
         pub_influence_field_viz_ = n.advertise<visualization_msgs::Marker>("/influence_field_marker", 10);
 
         distance_from_target = n.advertise<arm_controllers::ExtendedVector3>("/distance_obj", 1000);
         
+        //publisher force and distance for each joint
+        pub_distance_per_joint_.resize(n_joints_);
+        pub_force_per_joint_.resize(n_joints_);
+
+        for (int i = 0; i < n_joints_; ++i)
+        {
+            std::string distance_topic_name = "/joint_" + std::to_string(i + 1) + "/distance";
+            pub_distance_per_joint_[i] = n.advertise<std_msgs::Float64MultiArray>(distance_topic_name, 1000);
+
+            std::string force_topic_name = "/joint_" + std::to_string(i + 1) + "/force";
+            pub_force_per_joint_[i] = n.advertise<std_msgs::Float64MultiArray>(force_topic_name, 1000);
+        }
+
         
         control_mode_buffer_.writeFromNonRT(1);
 
@@ -320,22 +329,22 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
         command_buffer_.initRT(initial_commands);
 
-        /*
+        
         //Obstacle// Initialize obstacles
         CylindricalObstacle cylinder;
-        cylinder.position = KDL::Vector(0.5, 0.0, 0.0); // Position of the base of the cylinder
+        cylinder.position = KDL::Vector(0.0, 0.5, 0.15); // Position of the base of the cylinder
         cylinder.radius = 0.25;  // Cylinder radius
         cylinder.height = 0.3;   // Cylinder height
         cylinder.influence_radius = 0.30; // Influence radius for APF
         cylindrical_obstacles_.push_back(cylinder);
-        */
+        
     
 
         // Define the wall as a rectangular obstacle
         RectangularObstacle wall;
-        wall.center = KDL::Vector(0.5, 0.0, 0.5); // Center position
-        wall.width = 0.1;                         // Thickness along x-axis (e.g., 0.1 meters)
-        wall.depth = 0.4;                         // Depth along y-axis (from -0.2 to 0.2)
+        wall.center = KDL::Vector(0.85, 0.0, 0.3); // Center position
+        wall.width = 0.7;                         // Thickness along x-axis (e.g., 0.1 meters)
+        wall.depth = 1.0;                         // Depth along y-axis (from -0.5 to 0.5)
         wall.height = 1.0;                        // Height along z-axis
         wall.safety_margin = 0.05;                // Optional safety margin (adjust as needed)
         rectangular_obstacles_.push_back(wall);
@@ -670,19 +679,28 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                                 // Accumulate the tangential force
                                 F_rep += F_tangential;
 
-                                // Publish the tangential force for visualization or debugging
-                                std_msgs::Float64MultiArray rep_force_tangential_msg;
-                                rep_force_tangential_msg.data.resize(3);
-                                rep_force_tangential_msg.data[0] = F_tangential.x();
-                                rep_force_tangential_msg.data[1] = F_tangential.y();
-                                rep_force_tangential_msg.data[2] = F_tangential.z();
-                                pub_rep_force_tangential.publish(rep_force_tangential_msg);
+                             
                             }
 
                             // Accumulate the repulsive force
                             F_repulsive_joint += F_rep;
                         }
                     }
+
+                    //mesage of the joint
+                    std_msgs::Float64MultiArray distance_msg;
+                    distance_msg.data.resize(3);
+                    distance_msg.data[0] = joint_position.x();
+                    distance_msg.data[1] = joint_position.y();
+                    distance_msg.data[2] = joint_position.z();
+                    pub_distance_per_joint_[j].publish(distance_msg);
+
+                    std_msgs::Float64MultiArray force_msg;
+                    force_msg.data.resize(3);
+                    force_msg.data[0] = F_repulsive_joint.x();
+                    force_msg.data[1] = F_repulsive_joint.y();
+                    force_msg.data[2] = F_repulsive_joint.z();
+                    pub_force_per_joint_[j].publish(force_msg);
 
                     // -------------------- Map Repulsive Forces to Joint Torques --------------------
 
@@ -697,13 +715,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
                     // Accumulate the torques
                     tau_obstacle_total += tau_obstacle_joint;
 
-                    // -------------------- (Optional) Publish Repulsive Force for Each Joint --------------------
-                    std_msgs::Float64MultiArray rep_force_msg;
-                    rep_force_msg.data.resize(3);
-                    rep_force_msg.data[0] = F_repulsive_joint.x();
-                    rep_force_msg.data[1] = F_repulsive_joint.y();
-                    rep_force_msg.data[2] = F_repulsive_joint.z();
-                    pub_rep_force_.publish(rep_force_msg);
+                   
                 }
 
                 // ------------------------ Combine Task-Space Control and Obstacle Avoidance ------------------------
@@ -741,8 +753,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
                 pub_end_effector_pos_.publish(end_effector_msg);
 
-                // ------------------------ (Optional) Publish Total Repulsive Force ------------------------
-                // You can aggregate and publish the total repulsive force if needed
+               
 
                 ROS_INFO("-----------------------------------------------------------------------");
                 ROS_INFO("-");
@@ -889,15 +900,17 @@ class GravityCompController : public controller_interface::Controller<hardware_i
     std::vector<CylindricalObstacle> cylindrical_obstacles_;
     std::vector<RectangularObstacle> rectangular_obstacles_;
 
-    //publisher force obstacle
-    ros::Publisher pub_rep_force_;
-    ros::Publisher pub_rep_force_tangential;
+  
     ros::Publisher distance_from_target;
 
     ros::Publisher pub_influence_field_viz_;
     
     //Position of joint
     std::vector<int> joint_segment_indices_;
+
+    //Bublishing for each joint
+    std::vector<ros::Publisher> pub_distance_per_joint_;
+    std::vector<ros::Publisher> pub_force_per_joint_;
 
 
 
