@@ -253,6 +253,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         e_cmd.data = Eigen::VectorXd::Zero(n_joints_);
 
         ex_ = Eigen::VectorXd::Zero(n_joints_); // Initialize as a 6D vector with all elements zero
+        er_i = Eigen::VectorXd::Zero(3);
 
         //aruco
         aruco_x.resize(3);
@@ -264,6 +265,10 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         C_.resize(kdl_chain_.getNrOfJoints());
         G_.resize(kdl_chain_.getNrOfJoints());
         J_.resize(kdl_chain_.getNrOfJoints());
+
+
+        
+     
 
         // ********* 6. ROS commands *********
         // 6.1 Publisher
@@ -408,18 +413,14 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
         double roll, pitch, yaw;
         KDL::Rotation R_marker_in_camera = KDL::Rotation::Quaternion(
-            aruco_data.aruco_q.x(),
-            aruco_data.aruco_q.y(),
             aruco_data.aruco_q.z(),
+            aruco_data.aruco_q.y(),
+            aruco_data.aruco_q.x(),
             aruco_data.aruco_q.w()
         );
 
-        // Ora chiama GetRPY per convertire la rotazione in roll, pitch e yaw
-        R_marker_in_camera.GetRPY(roll, pitch, yaw);
-
         
-        //Frame camera frame position marker aruco
-
+      
         KDL::Frame marker_pose_in_robot_frame(R_marker_in_camera, p_marker_in_camera);
 
         
@@ -492,20 +493,15 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 /////////////////////////////////////
                 
                 
-                z_desire = z_desire + 0.2 ;
-                
+              
                 // Desired end-effector pose
-                
-                KDL::Vector desired_position(x_desire, y_desire , 0.45);
-                //KDL::Vector desired_position(x_desire, y_desire, z_desire);
-
+                double z_offset = 0.45; // Adjust this value as needed
+                KDL::Vector desired_position(x_desire, y_desire, z_desire + z_offset);
+                                
                
-
-                KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
-
-                //KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI) * KDL::Rotation::RotZ( + M_PI / 2);
-
-                     
+                //KDL::Rotation desired_orientation = KDL::Rotation::RotX(- 1.5* M_PI);
+                KDL::Rotation desired_orientation = KDL::Rotation::RotX(-1.5 * M_PI) * KDL::Rotation::RotY(M_PI)* KDL::Rotation::RotZ(0);
+                                    
                 KDL::Frame desired_frame(desired_orientation, desired_position);
 
                 ex_temp_ = KDL::diff(end_effector_frame, desired_frame);
@@ -521,18 +517,27 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 
 
                 // Task-space PID gains
-                KDL::Vector Kp_trans(500, 500, 500); // Increase proportional gains
+                KDL::Vector Kp_trans(600, 600, 600); // Increase proportional gains
                 KDL::Vector Kd_trans(80, 80, 80); 
 
                 KDL::Vector Kp_rot( 15.0,  15.0, 15.0);
                 KDL::Vector Kd_rot( 15.0,  15.0,  15.0);
 
+                KDL::Vector ki_trans(0.3, 0.3 , 0.5);
+
+                
+
                 // Compute the task-space control effort
                 KDL::Wrench F_desired;
                 for (int i = 0; i < 3; i++) {
-                    F_desired.force(i) = Kp_trans(i) * ex_(i) + Kd_trans(i) * (-xdot_(i));
+                    er_i(i) = er_i(i) + ex_(i);
+                    F_desired.force(i) = Kp_trans(i) * ex_(i) + Kd_trans(i) * (-xdot_(i)) + ki_trans(i)*er_i(i);
                     F_desired.torque(i) = Kp_rot(i) * ex_(i+3) + Kd_rot(i) * (-xdot_(i+3));
                 }
+
+                ROS_INFO("er_i: [Fx: %f, Fy: %f, Fz: %f]", 
+                        er_i(0), er_i(1), er_i(2));
+
                 ROS_INFO("Task-space force: [Fx: %f, Fy: %f, Fz: %f]", 
                         F_desired.force(0), F_desired.force(1), F_desired.force(2));
                 ROS_INFO("Task-space torque: [Tx: %f, Ty: %f, Tz: %f]", 
@@ -558,7 +563,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
 
                 ROS_INFO("-----------------------------------------------------------------------");
-                ROS_INFO("");
+                ROS_INFO("- ");
 
                 // Apply torque commands
                 for (int i = 0; i < n_joints_; i++)
@@ -662,6 +667,9 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
     Eigen::VectorXd qd_dot_task; // Desired joint velocities from task-space mapping
 
+    //errori untegrativi
+    Eigen::VectorXd er_i;  
+  
  
 
     // Input

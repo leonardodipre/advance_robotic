@@ -14,7 +14,7 @@ import tf_conversions
 class ArucoDetectorNode:
     def __init__(self):
         rospy.init_node('aruco_detector_node', anonymous=True)
-        rospy.sleep(5)  # Delay to allow other nodes to start and publish transforms
+        #sleep(5)  # Delay to allow other nodes to start and publish transforms
 
         self.marker_size = rospy.get_param('~marker_size', 0.1)  # Marker size in meters
         self.camera_frame = rospy.get_param('~camera_frame', 'relasense_color_optical_frame')
@@ -81,7 +81,7 @@ class ArucoDetectorNode:
         # Wait for the transform to be available
         while not self.tf_buffer.can_transform(self.base_frame, pose_msg.header.frame_id, rospy.Time(0), rospy.Duration(1.0)) and not rospy.is_shutdown():
             rospy.logwarn("Waiting for transform to become available...")
-            time.sleep(0.5)  # wait for half a second before checking again
+            #time.sleep(0.5)  # wait for half a second before checking again
 
         # Once available, do the transformation
         try:
