@@ -311,6 +311,9 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         x_init_ = KDL::Vector::Zero();
         xd_target_ = KDL::Vector::Zero();
 
+        traj_start_position_ = KDL::Vector::Zero();
+        traj_goal_position_ = KDL::Vector::Zero();
+
 
 
         return true;
@@ -388,8 +391,16 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     void starting(const ros::Time &time)
     {
         t = 0.0;
+        
+        
+      
         traj_initialized_ = false;
+
+        // Print the initial pose
         ROS_INFO("Starting Computed Torque Controller");
+      
+        
+            
     }
 
 
@@ -408,11 +419,14 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         qd_dot_.data = cmd.qd_dot.data;
         qd_ddot_.data = cmd.qd_ddot.data;
 
+        Eigen::Vector3d cmd_xd_position = cmd.xd.segment(0,3);
+        //ROS_INFO("cmd_xd_position: x = %f, y = %f, z = %f", cmd_xd_position.x(), cmd_xd_position.y(), cmd_xd_position.z());
+        
         int control_mode = *(control_mode_buffer_.readFromRT());
 
 
         // Retrieve the latest commands (if any)
-      
+        
         ArucoData aruco_data = *(aruco_buffer_.readFromRT());
         KDL::Vector p_marker_in_camera(
             aruco_data.aruco_x(0),
@@ -586,27 +600,26 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             } 
             case 8:
             {
-                // Initialize trajectory if not already done
-                if (!traj_initialized_)
+
+                KDL::Frame current_ee_frame;
+                fk_pos_solver_->JntToCart(q_, current_ee_frame);
+                KDL::Vector current_position = current_ee_frame.p;
+
+                KDL::Vector goal_position(cmd.xd(0), cmd.xd(1), cmd.xd(2));
+
+                // Check if the goal position has changed
+                if ((goal_position - traj_goal_position_).Norm() > 1e-6)
                 {
+                    // Goal has changed, reinitialize trajectory
                     traj_start_time_ = ros::Time::now().toSec();
+                    traj_duration_ = 5.0; // Trajectory duration in seconds
 
-                    // Get the current end-effector position
-                    KDL::Frame end_effector_frame;
-                    fk_pos_solver_->JntToCart(q_, end_effector_frame);
-                    x_init_ = end_effector_frame.p;
-
-                    // Set the target position (adjust as needed)
-                    
-                    xd_target_ = KDL::Vector(-0.4, 0.4, 0.3); // Example target position
-
-                    // Set trajectory duration
-                    traj_duration_ = 5.0; // 5 seconds
-
-                    traj_initialized_ = true;
+                    // Set start and goal positions
+                    traj_start_position_ = current_position;
+                    traj_goal_position_ = goal_position;
                 }
 
-                // Current time in trajectory
+                // Compute the time elapsed since the trajectory started
                 double current_time = ros::Time::now().toSec() - traj_start_time_;
 
                 // Ensure current_time does not exceed traj_duration_
@@ -615,84 +628,67 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                     current_time = traj_duration_;
                 }
 
-                // Trajectory generation functions
-                auto quintic_trajectory = [](double x0, double xT, double T, double t) {
-                    double a0 = x0;
+                // Quintic trajectory planning for each axis
+                KDL::Vector desired_position, desired_velocity, desired_acceleration;
+
+                for (int idx = 0; idx < 3; ++idx) // For x, y, z
+                {
+                    double p0 = traj_start_position_(idx);
+                    double pf = traj_goal_position_(idx);
+                    double T = traj_duration_;
+                    double t = current_time;
+
+                    // Quintic polynomial coefficients
+                    double a0 = p0;
                     double a1 = 0;
                     double a2 = 0;
-                    double a3 = (10 * (xT - x0)) / (T * T * T);
-                    double a4 = (-15 * (xT - x0)) / (T * T * T * T);
-                    double a5 = (6 * (xT - x0)) / (T * T * T * T * T);
-                    return a0 + a1 * t + a2 * t * t + a3 * t * t * t + a4 * t * t * t * t + a5 * t * t * t * t * t;
-                };
+                    double a3 = (10 * (pf - p0)) / pow(T, 3);
+                    double a4 = (-15 * (pf - p0)) / pow(T, 4);
+                    double a5 = (6 * (pf - p0)) / pow(T, 5);
 
-                auto quintic_trajectory_vel = [](double x0, double xT, double T, double t) {
-                    double a1 = 0;
-                    double a2 = 0;
-                    double a3 = (10 * (xT - x0)) / (T * T * T);
-                    double a4 = (-15 * (xT - x0)) / (T * T * T * T);
-                    double a5 = (6 * (xT - x0)) / (T * T * T * T * T);
-                    return a1 + 2 * a2 * t + 3 * a3 * t * t + 4 * a4 * t * t * t + 5 * a5 * t * t * t * t;
-                };
+                    // Desired position
+                    desired_position(idx) = a0 + a1 * t + a2 * pow(t, 2) + a3 * pow(t, 3) + a4 * pow(t, 4) + a5 * pow(t, 5);
 
-                auto quintic_trajectory_acc = [](double x0, double xT, double T, double t) {
-                    double a2 = 0;
-                    double a3 = (10 * (xT - x0)) / (T * T * T);
-                    double a4 = (-15 * (xT - x0)) / (T * T * T * T);
-                    double a5 = (6 * (xT - x0)) / (T * T * T * T * T);
-                    return 2 * a2 + 6 * a3 * t + 12 * a4 * t * t + 20 * a5 * t * t * t;
-                };
+                    // Desired velocity
+                    desired_velocity(idx) = a1 + 2 * a2 * t + 3 * a3 * pow(t, 2) + 4 * a4 * pow(t, 3) + 5 * a5 * pow(t, 4);
 
-                // Desired positions
-                double x_desired = quintic_trajectory(x_init_.x(), xd_target_.x(), traj_duration_, current_time);
-                double y_desired = quintic_trajectory(x_init_.y(), xd_target_.y(), traj_duration_, current_time);
-                double z_desired = quintic_trajectory(x_init_.z(), xd_target_.z(), traj_duration_, current_time);
+                    // Desired acceleration
+                    desired_acceleration(idx) = 2 * a2 + 6 * a3 * t + 12 * a4 * pow(t, 2) + 20 * a5 * pow(t, 3);
+                }
 
-                // Desired velocities
-                double xdot_desired = quintic_trajectory_vel(x_init_.x(), xd_target_.x(), traj_duration_, current_time);
-                double ydot_desired = quintic_trajectory_vel(x_init_.y(), xd_target_.y(), traj_duration_, current_time);
-                double zdot_desired = quintic_trajectory_vel(x_init_.z(), xd_target_.z(), traj_duration_, current_time);
-
-                // Desired accelerations
-                double xddot_desired = quintic_trajectory_acc(x_init_.x(), xd_target_.x(), traj_duration_, current_time);
-                double yddot_desired = quintic_trajectory_acc(x_init_.y(), xd_target_.y(), traj_duration_, current_time);
-                double zddot_desired = quintic_trajectory_acc(x_init_.z(), xd_target_.z(), traj_duration_, current_time);
-
-                // Current end-effector position and Jacobian
-                KDL::Frame end_effector_frame;
-                fk_pos_solver_->JntToCart(q_, end_effector_frame);
+                // Compute the current end-effector velocity
                 jnt_to_jac_solver_->JntToJac(q_, J_);
-
-                // Current end-effector velocity
                 xdot_ = J_.data * qdot_.data;
 
-                // Position errors
-                double ex = end_effector_frame.p.x() - x_desired;
-                double ey = end_effector_frame.p.y() - y_desired;
-                double ez = end_effector_frame.p.z() - z_desired;
+                // Extract linear velocity (first three elements)
+                Eigen::Vector3d current_velocity = xdot_.segment(0, 3);
 
-                // Velocity errors
-                double ex_dot = xdot_(0) - xdot_desired;
-                double ey_dot = xdot_(1) - ydot_desired;
-                double ez_dot = xdot_(2) - zdot_desired;
+                // Position and velocity errors
+                Eigen::Vector3d position_error;
+                position_error << current_position.x() - desired_position.x(),
+                                current_position.y() - desired_position.y(),
+                                current_position.z() - desired_position.z();
 
-                // Task-space PID gains
-                double Kp_trans = 600.0; // Adjust as needed
-                double Kd_trans = 80.0;
+                Eigen::Vector3d desired_velocity_eigen(desired_velocity.x(), desired_velocity.y(), desired_velocity.z());
+                Eigen::Vector3d velocity_error = current_velocity - desired_velocity_eigen;
 
-                // Desired accelerations with feedback
-                double ax_desired = xddot_desired - Kp_trans * ex - Kd_trans * ex_dot;
-                double ay_desired = yddot_desired - Kp_trans * ey - Kd_trans * ey_dot;
-                double az_desired = zddot_desired - Kp_trans * ez - Kd_trans * ez_dot;
+                // Task-space PD gains
+                double Kp = 600.0; // Proportional gain
+                double Kd = 80.0;  // Derivative gain
 
-                // Assemble desired task-space accelerations
+                // Desired task-space acceleration with feedback
+                Eigen::Vector3d desired_acceleration_eigen(desired_acceleration.x(), desired_acceleration.y(), desired_acceleration.z());
+                Eigen::Vector3d desired_task_acceleration = desired_acceleration_eigen - Kp * position_error - Kd * velocity_error;
+
+                // Assemble the desired task-space acceleration vector (6D)
                 Eigen::VectorXd xddot_task(6);
-                xddot_task << ax_desired, ay_desired, az_desired, 0.0, 0.0, 0.0; // Assuming no orientation control for now
+                xddot_task.head(3) = desired_task_acceleration;
+                xddot_task.tail(3) = Eigen::Vector3d::Zero(); // Assuming no orientation control
 
                 // Compute the inverse of the joint-space inertia matrix
                 Eigen::MatrixXd M_inv = M_.data.inverse();
 
-                // Compute Lambda (operational space inertia matrix)
+                // Compute the operational space inertia matrix Lambda
                 Eigen::MatrixXd Lambda = (J_.data * M_inv * J_.data.transpose()).inverse();
 
                 // Compute desired task-space forces
@@ -704,7 +700,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 // Add Coriolis and Gravity compensation
                 tau_d_.data += C_.data + G_.data;
 
-                // Apply torque commands
+                // Apply torque commands to the joints
                 for (int i = 0; i < n_joints_; i++)
                 {
                     joints_[i].setCommand(tau_d_(i));
@@ -712,6 +708,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
                 break;
             }
+
 
             default:
                 ROS_WARN("Invalid control mode selected: %d", control_mode);
@@ -848,6 +845,9 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     double traj_duration_;
     KDL::Vector x_init_;
     KDL::Vector xd_target_;
+
+    KDL::Vector traj_start_position_; // Start position of the trajectory
+    KDL::Vector traj_goal_position_;  // Goal position of the trajectory
 
 
 };
