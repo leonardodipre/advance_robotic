@@ -315,6 +315,11 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
         traj_goal_position_ = KDL::Vector::Zero();
 
 
+        waypoints_.clear();
+        segment_durations_.clear();
+        current_segment_index_ = 0;
+        segment_start_time_ = 0.0;
+
 
         return true;
     }
@@ -600,7 +605,6 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
             } 
             case 8:
             {
-
                 KDL::Frame current_ee_frame;
                 fk_pos_solver_->JntToCart(q_, current_ee_frame);
                 KDL::Vector current_position = current_ee_frame.p;
@@ -612,58 +616,83 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 {
                     // Goal has changed, reinitialize trajectory
                     traj_start_time_ = ros::Time::now().toSec();
-                    traj_duration_ = 5.0; // Trajectory duration in seconds
 
-                    // Set start and goal positions
-                    traj_start_position_ = current_position;
+                    // Definisci i waypoint
+                    waypoints_.clear();
+                    waypoints_.push_back(current_position);
+
+                    // Definisci waypoint intermediario per evitare punti problematici
+                    KDL::Vector waypoint1(0.2, 0.3, current_position.z()); // Regola secondo necessità
+                    waypoints_.push_back(waypoint1);
+
+                    
+
+                    waypoints_.push_back(goal_position);
+
+                    // Definisci le durate per ogni segmento
+                    segment_durations_.clear();
+                    double duration1 = 5.0; // Durata da current_position a waypoint1
+                    double duration2 = 5.0; // Durata da waypoint1 a goal_position
+                    segment_durations_.push_back(duration1);
+                    segment_durations_.push_back(duration2);
+
+                    // Reimposta le variabili di tracciamento della traiettoria
+                    current_segment_index_ = 0;
+                    segment_start_time_ = traj_start_time_;
+
+                    // Aggiorna traj_goal_position_
                     traj_goal_position_ = goal_position;
                 }
 
-                // Compute the time elapsed since the trajectory started
-                double current_time = ros::Time::now().toSec() - traj_start_time_;
+                // Calcola il tempo trascorso dall'inizio del segmento corrente
+                double elapsed_time = ros::Time::now().toSec() - segment_start_time_;
 
-                // Ensure current_time does not exceed traj_duration_
-                if (current_time > traj_duration_)
+                // Assicurati che elapsed_time non superi la durata del segmento corrente
+                if (elapsed_time > segment_durations_[current_segment_index_])
                 {
-                    current_time = traj_duration_;
+                    elapsed_time = segment_durations_[current_segment_index_];
                 }
 
-                // Quintic trajectory planning for each axis
+                // Ottieni le posizioni di inizio e fine per il segmento corrente
+                KDL::Vector p0 = waypoints_[current_segment_index_];
+                KDL::Vector pf = waypoints_[current_segment_index_ + 1];
+                double T = segment_durations_[current_segment_index_];
+                double t = elapsed_time;
+
+                // Pianificazione della traiettoria quintica per ogni asse
                 KDL::Vector desired_position, desired_velocity, desired_acceleration;
 
-                for (int idx = 0; idx < 3; ++idx) // For x, y, z
+                for (int idx = 0; idx < 3; ++idx) // Per x, y, z
                 {
-                    double p0 = traj_start_position_(idx);
-                    double pf = traj_goal_position_(idx);
-                    double T = traj_duration_;
-                    double t = current_time;
+                    double p0_i = p0(idx);
+                    double pf_i = pf(idx);
 
-                    // Quintic polynomial coefficients
-                    double a0 = p0;
+                    // Coefficienti del polinomio quintico
+                    double a0 = p0_i;
                     double a1 = 0;
                     double a2 = 0;
-                    double a3 = (10 * (pf - p0)) / pow(T, 3);
-                    double a4 = (-15 * (pf - p0)) / pow(T, 4);
-                    double a5 = (6 * (pf - p0)) / pow(T, 5);
+                    double a3 = (10 * (pf_i - p0_i)) / pow(T, 3);
+                    double a4 = (-15 * (pf_i - p0_i)) / pow(T, 4);
+                    double a5 = (6 * (pf_i - p0_i)) / pow(T, 5);
 
-                    // Desired position
+                    // Posizione desiderata
                     desired_position(idx) = a0 + a1 * t + a2 * pow(t, 2) + a3 * pow(t, 3) + a4 * pow(t, 4) + a5 * pow(t, 5);
 
-                    // Desired velocity
+                    // Velocità desiderata
                     desired_velocity(idx) = a1 + 2 * a2 * t + 3 * a3 * pow(t, 2) + 4 * a4 * pow(t, 3) + 5 * a5 * pow(t, 4);
 
-                    // Desired acceleration
+                    // Accelerazione desiderata
                     desired_acceleration(idx) = 2 * a2 + 6 * a3 * t + 12 * a4 * pow(t, 2) + 20 * a5 * pow(t, 3);
                 }
 
-                // Compute the current end-effector velocity
+                // Calcola la velocità corrente dell'end-effector
                 jnt_to_jac_solver_->JntToJac(q_, J_);
                 xdot_ = J_.data * qdot_.data;
 
-                // Extract linear velocity (first three elements)
+                // Estrai la velocità lineare (primi tre elementi)
                 Eigen::Vector3d current_velocity = xdot_.segment(0, 3);
 
-                // Position and velocity errors
+                // Errori di posizione e velocità
                 Eigen::Vector3d position_error;
                 position_error << current_position.x() - desired_position.x(),
                                 current_position.y() - desired_position.y(),
@@ -672,38 +701,48 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 Eigen::Vector3d desired_velocity_eigen(desired_velocity.x(), desired_velocity.y(), desired_velocity.z());
                 Eigen::Vector3d velocity_error = current_velocity - desired_velocity_eigen;
 
-                // Task-space PD gains
-                double Kp = 600.0; // Proportional gain
-                double Kd = 80.0;  // Derivative gain
+                // Guadagni PD nello spazio delle task
+                double Kp = 600.0; // Guadagno proporzionale
+                double Kd = 80.0;  // Guadagno derivativo
 
-                // Desired task-space acceleration with feedback
+                // Accelerazione desiderata nello spazio delle task con feedback
                 Eigen::Vector3d desired_acceleration_eigen(desired_acceleration.x(), desired_acceleration.y(), desired_acceleration.z());
                 Eigen::Vector3d desired_task_acceleration = desired_acceleration_eigen - Kp * position_error - Kd * velocity_error;
 
-                // Assemble the desired task-space acceleration vector (6D)
+                // Assembla il vettore di accelerazione desiderata nello spazio delle task (6D)
                 Eigen::VectorXd xddot_task(6);
                 xddot_task.head(3) = desired_task_acceleration;
-                xddot_task.tail(3) = Eigen::Vector3d::Zero(); // Assuming no orientation control
+                xddot_task.tail(3) = Eigen::Vector3d::Zero(); // Supponendo nessun controllo dell'orientamento
 
-                // Compute the inverse of the joint-space inertia matrix
+                // Calcola l'inverso della matrice di inerzia nello spazio delle giunte
                 Eigen::MatrixXd M_inv = M_.data.inverse();
 
-                // Compute the operational space inertia matrix Lambda
+                // Calcola la matrice di inerzia dello spazio operativo Lambda
                 Eigen::MatrixXd Lambda = (J_.data * M_inv * J_.data.transpose()).inverse();
 
-                // Compute desired task-space forces
+                // Calcola le forze desiderate nello spazio delle task
                 Eigen::VectorXd F_desired = Lambda * xddot_task;
 
-                // Map task-space forces to joint torques
+                // Mappa le forze dello spazio delle task ai torques delle giunte
                 tau_d_.data = J_.data.transpose() * F_desired;
 
-                // Add Coriolis and Gravity compensation
+                // Aggiungi compensazione di Coriolis e Gravità
                 tau_d_.data += C_.data + G_.data;
 
-                // Apply torque commands to the joints
+                // Applica i comandi di torque alle giunte
                 for (int i = 0; i < n_joints_; i++)
                 {
                     joints_[i].setCommand(tau_d_(i));
+                }
+
+                // Verifica se il segmento corrente è completato e passa al successivo
+                if (elapsed_time >= segment_durations_[current_segment_index_])
+                {
+                    if (current_segment_index_ < waypoints_.size() - 2)
+                    {
+                        current_segment_index_++;
+                        segment_start_time_ += segment_durations_[current_segment_index_ - 1];
+                    }
                 }
 
                 break;
@@ -848,6 +887,12 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
     KDL::Vector traj_start_position_; // Start position of the trajectory
     KDL::Vector traj_goal_position_;  // Goal position of the trajectory
+
+    // Variabili per la pianificazione della traiettoria con waypoint
+    std::vector<KDL::Vector> waypoints_;
+    std::vector<double> segment_durations_;
+    int current_segment_index_ = 0;
+    double segment_start_time_ = 0.0;
 
 
 };

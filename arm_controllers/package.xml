@@ -26,7 +26,7 @@
   <build_depend>rospy</build_depend>
   <build_depend>message_generation</build_depend>
   <build_depend>geometry_msgs</build_depend>
-  <build_depend>visualization_msgs</build_depend> <!-- Added -->
+  <build_depend>visualization_msgs</build_depend>
 
   <!-- Run dependencies -->
   <exec_depend>controller_interface</exec_depend>
@@ -41,8 +41,7 @@
   <exec_depend>rospy</exec_depend>
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>visualization_msgs</exec_depend> <!-- Added -->
-  
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>python3</exec_depend>
 
   <export>

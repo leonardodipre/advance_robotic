@@ -19,7 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   message_generation
   geometry_msgs
-  visualization_msgs  # Added visualization_msgs
+  visualization_msgs
 )
 
 # Dynamic reconfigure
@@ -33,6 +33,8 @@ add_message_files(
     ControllerJointState.msg
     ArucoTracker.msg
     ExtendedVector3.msg  # Define custom message here
+    TrajectoryPhase.msg  # New message
+    TrajectoryPlan.msg   # New message
 )
 
 # Generate added messages and services with any dependencies listed here
@@ -87,6 +89,7 @@ target_link_libraries(${PROJECT_NAME}
 add_dependencies(${PROJECT_NAME}
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
   ${catkin_EXPORTED_TARGETS}
+  ${PROJECT_NAME}_generate_messages_cpp  # Dipendenza per la generazione dei messaggi
 )
 
 # Declare the executable
@@ -101,6 +104,7 @@ target_link_libraries(motion_switcher_node
 add_dependencies(motion_switcher_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
   ${catkin_EXPORTED_TARGETS}
+  ${PROJECT_NAME}_generate_messages_cpp  # Dipendenza per la generazione dei messaggi
 )
 
 # Install C++ executables and libraries
@@ -122,5 +126,6 @@ catkin_install_python(PROGRAMS
   scripts/potential_forces.py
   scripts/arunco_vs.py
   scripts/aruco_movment.py
+  scripts/trajectory_planning.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

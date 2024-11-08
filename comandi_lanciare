@@ -91,5 +91,7 @@ roslaunch elfin_gazebo obstacol_word.launch controller:=gravity_comp_controller
 rosrun plotjuggler plotjuggler -t ROS1
 
 
+rosrun arm_controllers trajectory_planning.py
+
 
 

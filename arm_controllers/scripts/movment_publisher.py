@@ -78,8 +78,10 @@ def fixed_motion():
     position = [math.radians(angle) for angle in [0.0, -15.0, 80.0, 0.0, 80.0, 0.0]]
     velocity = [0] * 6
     acceleration = [0] * 6
+    task_coords = [0.5, 0.0, 0.3, 0.0, 0.0, 0.0]
+    task_vel = [0] * 6
     return position, velocity, acceleration, task_coords, task_vel
-
+    
 def task_space_function(t, dt):
     # Trajectory parameters
     A = 0.2          # Amplitude (m)
@@ -198,7 +200,7 @@ def publish_motion(pub, motion_type, t, dt):
     msg = Float64MultiArray()
 
     if motion_type == 1:  # Fixed Motion
-        positions, velocities, accelerations, _, _ = fixed_motion()
+        positions, velocities, accelerations, task_coords , _ = fixed_motion()
     elif motion_type == 2:  # Sinusoidal Motion
         positions, velocities, accelerations, _, _ = sinusoidal_motion(t)
     elif motion_type == 3:  # Custom Angles
