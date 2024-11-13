@@ -28,7 +28,7 @@
 
   
   <node name="Cilinder" pkg="gazebo_ros" type="spawn_model" output="screen"
-    args="-sdf -model cilindre -file /root/src/elfin/elfin_gazebo/models/aruco_marker/cilindre.sdf -x 0.0 -y 0.5 -z 0.15" />
+    args="-sdf -model cilindre -file /root/src/elfin/elfin_gazebo/models/aruco_marker/cilindre.sdf -x 0.0 -y 0.5 -z 0.0" />
   
 
   <node name="wall" pkg="gazebo_ros" type="spawn_model" output="screen"

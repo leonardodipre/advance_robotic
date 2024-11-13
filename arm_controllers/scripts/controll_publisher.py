@@ -14,16 +14,17 @@ Select control mode:
 6: Cartesian Coordinates
 7: Aruco Tracker
 8: Task space smooth transition
+9 : Task space obj avoidance
 Enter your choice: """
     while not rospy.is_shutdown():
         try:
             input_mode = int(input(menu_options))
-            if 1 <= input_mode <= 8:
+            if 1 <= input_mode <= 9:
                 mode_container['mode'] = input_mode
             else:
-                print("Invalid mode selected. Please select a number between 1 and 7.")
+                print("Invalid mode selected. Please select a number between 1 and 9.")
         except ValueError:
-            print("Invalid input. Please enter a number between 1 and 7.")
+            print("Invalid input. Please enter a number between 1 and 9.")
         except EOFError:
             print("\nInput stream closed. Exiting input thread.")
             break

@@ -428,7 +428,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
     void controlModeCB(const std_msgs::Int32::ConstPtr &msg)
     {
         int mode = msg->data;
-        if (mode >= 1 && mode <= 7)
+        if (mode >= 1 && mode <= 9)
         {
             control_mode_buffer_.writeFromNonRT(mode);
         }
@@ -494,7 +494,7 @@ class GravityCompController : public controller_interface::Controller<hardware_i
 
                }
 
-            case 7:
+            case 9:
             {
                 ROS_INFO("---------------------Inside Task-Space Control with Obstacle Avoidance------------------------------");
 

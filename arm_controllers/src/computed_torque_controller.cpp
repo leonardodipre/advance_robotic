@@ -551,7 +551,7 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 KDL::Vector Kp_rot( 15.0,  15.0, 15.0);
                 KDL::Vector Kd_rot( 15.0,  15.0,  15.0);
 
-                KDL::Vector ki_trans(0.3, 0.3 , 0.5);
+                KDL::Vector ki_trans(0.13, 0.13 , 0.13);
 
                 
 

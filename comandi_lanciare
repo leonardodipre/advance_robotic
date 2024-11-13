@@ -39,8 +39,6 @@ EXERCISE 3
 
 roslaunch elfin_gazebo elfin3_empty_world.launch controller:=computed_torque_controller
  
-
-
 rosrun arm_controllers  movment_publisher.py
 
 rosrun arm_controllers  controll_publisher.py
@@ -52,46 +50,42 @@ rqt_plot /elfin/computed_torque_controller/e/data[1], /elfin/computed_torque_con
 
 EXERCISE 4
 
-roslaunch elfin_gazebo elfin3_empty_world.launch controller:=computed_torque_controller
- 
-rosrun arm_controllers arunco_vs.py
+Launch the nev with the aruco tiles...
 
-rosrun arm_controllers aruco_traker_topic.py
+    roslaunch elfin_gazebo elfin3_empty_world.launch controller:=computed_torque_controller
 
+python code for traking the tiles
+    rosrun arm_controllers arunco_vs.py
 
-rosrun arm_controllers aruco_movment.py
+Move the robot to the position
+    rosrun arm_controllers  movment_publisher.py
 
+Controll the robot movment
+    rosrun arm_controllers  controll_publisher.py
+    
+    
+set the  TARGETS moving
 
-rosrun aruco_ros single.launch
+    rostopic pub /start_marker_motion std_msgs/Bool "data: true"
 
-
-
-MOVING TARGETS
-
-rostopic pub /start_marker_motion std_msgs/Bool "data: true"
-
-rostopic pub /start_marker_motion std_msgs/Bool "data: false"
-
-
-75
-0
-75
-0
-75
-0
+    rostopic pub /start_marker_motion std_msgs/Bool "data: false"
 
 
-ESERCIZIO 5 ( Obstical)
 
-rosrun arm_controllers potential_forces.py
+
+
+ESERCIZIO 5 ( Obstacol)
+
 
 roslaunch elfin_gazebo obstacol_word.launch controller:=gravity_comp_controller
+
 
 
 rosrun plotjuggler plotjuggler -t ROS1
 
 
-rosrun arm_controllers trajectory_planning.py
+
+ESERCIZIO 6
 
 
-
+    roslaunch elfin_gazebo elfin3_experiment1_world.launch controller:=adaptive_impedance_controller

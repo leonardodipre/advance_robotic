@@ -28,6 +28,17 @@
 #define JointMax 6
 #define SaveDataMax 7
 
+struct Commands
+{
+    KDL::JntArray qd;
+    KDL::JntArray qd_dot;
+    KDL::JntArray qd_ddot;
+    Eigen::VectorXd xd;     // Desired task-space position (6 elements)
+    Eigen::VectorXd xd_dot; // Desired task-space velocity (6 elements)
+    Commands() {}
+};
+
+
 namespace arm_controllers{
 
 	class AdaptiveImpedanceController: public controller_interface::Controller<hardware_interface::EffortJointInterface>
@@ -37,8 +48,6 @@ namespace arm_controllers{
 
 		bool init(hardware_interface::EffortJointInterface* hw, ros::NodeHandle &n)
   		{	
-
-			ROS_ERROR("HEY I HAVE A DIFFERENT NAME CHE FIGATA");
 			// List of controlled joints
     		if (!n.getParam("joints", joint_names_))
 			{
@@ -120,13 +129,25 @@ namespace arm_controllers{
 
 			gravity_ = KDL::Vector::Zero();
 			gravity_(2) = -9.81;
-			G_.resize(n_joints_);	
-			
+			G_.resize(n_joints_);
+
+			J_.resize(n_joints_); // Correctly resizes Jacobian for task-space control
+
+			      // 6 rows for task space, n_joints_ columns for joint space
+			qdot_.resize(n_joints_);         // 7-dimensional vector for joint velocities
+			tau_d_.resize(n_joints_);        // 7-dimensional vector for joint torques
+			C_.resize(n_joints_);
+						
 			// inverse dynamics solver
 			id_solver_.reset( new KDL::ChainDynParam(kdl_chain_, gravity_) );
 			fk_solver_.reset(new KDL::ChainFkSolverPos_recursive(kdl_chain_));
 			ik_vel_solver_.reset(new KDL::ChainIkSolverVel_pinv(kdl_chain_));
+
+			jac_solver_.reset(new KDL::ChainJntToJacSolver(kdl_chain_));
+
 			//ik_pos_solver_.reset(new KDL::ChainIkSolverPos_NR_JL(kdl_chain_, fk_solver_, ik_vel_solver_));
+			
+			id_solver_->JntToCoriolis(q_, qdot_, C_);
 
 			// command and state
 			tau_cmd_.data = Eigen::VectorXd::Zero(n_joints_);
@@ -145,6 +166,17 @@ namespace arm_controllers{
 			qdot_old_.data = Eigen::VectorXd::Zero(n_joints_);
 			qddot_.data = Eigen::VectorXd::Zero(n_joints_);
 
+
+			qd_.data = Eigen::VectorXd::Zero(n_joints_);
+			qd_dot_.data = Eigen::VectorXd::Zero(n_joints_);
+			qd_ddot_.data = Eigen::VectorXd::Zero(n_joints_);
+			
+			xd = Eigen::VectorXd::Zero(6);
+        	xd_dot = Eigen::VectorXd::Zero(6);
+
+			
+			
+
 			for (size_t i = 0; i < 6; i++)
 			{
 				Xc_dot_(i) = 0.0;
@@ -158,6 +190,8 @@ namespace arm_controllers{
 			Ramda_.resize(n_joints_);
 			Alpha_.resize(n_joints_);
 			Omega_.resize(n_joints_);
+
+			
 
 			Xr_dot_ = 0.0;
 			Xe_dot_ = 0.0;
@@ -252,30 +286,95 @@ namespace arm_controllers{
 				return false;
 			}
 
+			// Initialize control stage
+			control_stage_ = 1;
+			position_tolerance_ = 0.05; // e.g., 1 cm tolerance
+
+			// Initialize desired positions
+			desired_position_A_ = Eigen::VectorXd::Zero(6);
+			desired_position_B_ = Eigen::VectorXd::Zero(6);
+
+			// Set desired position A
+			desired_position_A_(0) = 0.5; // x-coordinate
+			desired_position_A_(1) = 0.0; // y-coordinate
+			desired_position_A_(2) = 0.09; // z-coordinate
+
+			// Set desired position B
+			desired_position_B_(0) = 0.5; // x-coordinate
+			desired_position_B_(1) = 0.5; // y-coordinate
+			desired_position_B_(2) = 0.05; // z-coordinate
+
+			// Initialize force control parameters
+			if (!n.getParam("/elfin/adaptive_impedance_controller/aic/fd_z", Fd_z_))
+			{
+				Fd_z_ = -50.0; // Desired force in z-direction (e.g., pressing down with 10 N)
+			}
+			if (!n.getParam("/elfin/adaptive_impedance_controller/aic/kf_z", Kf_z_))
+			{
+				Kf_z_ = 1.0; // Force control gain for the 3
+				//Kf_z_ = 0.001; //fr 2
+			}
+			if (!n.getParam("/elfin/adaptive_impedance_controller/aic/k", K_))
+			{
+				K_ = 0.5; // If not found, set stiffness to zero
+			}
+
+			// Initialize desired velocities
+			x_dot_desired_x = 0.1; // m/s (adjust as needed)
+			x_dot_desired_y = 0.0; // m/s
+
+			ex_ = Eigen::VectorXd::Zero(6); 
+
 			// command
 			sub_q_cmd_ = n.subscribe("command", 1, &AdaptiveImpedanceController::commandCB, this);
 			sub_forcetorque_sensor_ = n.subscribe<geometry_msgs::WrenchStamped>("/elfin/elfin/ft_sensor_topic", 1, &AdaptiveImpedanceController::updateFTsensor, this);
 
 			pub_SaveData_ = n.advertise<std_msgs::Float64MultiArray>("SaveData", 1000);
 
+			sub_command_ = n.subscribe("/motion_command", 1000, &AdaptiveImpedanceController::commandPosition, this);
+
+			// Initialize the command buffer with zeros
+			Commands initial_commands;
+			initial_commands.qd.data = Eigen::VectorXd::Zero(6);
+			initial_commands.qd_dot.data = Eigen::VectorXd::Zero(6);
+			initial_commands.qd_ddot.data = Eigen::VectorXd::Zero(6);
+			initial_commands.xd = Eigen::VectorXd::Zero(6);
+			initial_commands.xd_dot = Eigen::VectorXd::Zero(6);
+
+			command_buffer_.initRT(initial_commands);
+
+			//velcoity case 3
+			ex_ = Eigen::VectorXd::Zero(6);
+			xdot_error = Eigen::VectorXd::Zero(6);
+			max_Fz = 50.0; // Set maximum force limit as needed
+
    			return true;
   		}
 
 		void starting(const ros::Time& time)
 		{
-			// get joint positions
-			for(size_t i=0; i<n_joints_; i++) 
-			{
-				ROS_INFO("JOINT %d", (int)i);
-				q_(i) = joints_[i].getPosition();
-				q_init_(i) = q_(i);
-				qdot_(i) = joints_[i].getVelocity();
-			}
-
 			time_ = 0.0;
 			total_time_ = 0.0;
 
-			ROS_INFO("Starting Adaptive Impedance Controller");
+
+			control_stage_ = 1;
+
+    		// Initialize previous desired positions with current position
+			KDL::Frame end_effector_pose;
+			fk_solver_->JntToCart(q_, end_effector_pose);
+			x_d_x_prev_ = end_effector_pose.p.x();
+			x_d_y_prev_ = end_effector_pose.p.y();
+			x_d_z_prev_ = end_effector_pose.p.z();
+
+
+			x_eq_z_ = x_d_z_prev_;     // Equilibrium position in z-direction
+			x_desired_z_ = x_eq_z_;    // Desired z-position starts at equilibrium
+			x_dot_desired_z_ = 0.0;    // Initial desired z-velocity is zero
+
+
+    		ROS_INFO("Starting Adaptive Impedance Controller");
+
+			
 		}
 
 		void commandCB(const std_msgs::Float64MultiArrayConstPtr &msg)
@@ -290,7 +389,45 @@ namespace arm_controllers{
     			q_cmd_sp_(i) = msg->data[i];
 		}
 
-		//void updateFTsensor(const geometry_msgs::WrenchStamped::ConstPtr &msg)
+		void commandPosition(const std_msgs::Float64MultiArrayConstPtr &msg)
+		{
+			 size_t expected_size = 3 * 6 + 12; // 18 + 12 = 30
+			if (msg->data.size() != expected_size)
+			{
+				ROS_ERROR_STREAM("Dimension of command (" << msg->data.size()
+								<< ") does not match expected size (" << expected_size << ")! Not executing!");
+				return;
+			}
+
+			Commands cmd;
+			cmd.qd.data = Eigen::VectorXd::Zero(6);
+			cmd.qd_dot.data = Eigen::VectorXd::Zero(6);
+			cmd.qd_ddot.data = Eigen::VectorXd::Zero(6);
+			cmd.xd = Eigen::VectorXd::Zero(6);
+			cmd.xd_dot = Eigen::VectorXd::Zero(6);
+
+			// Read joint positions, velocities, and accelerations
+			for (size_t i = 0; i < 6; i++)
+			{
+				cmd.qd(i) = msg->data[i];
+				cmd.qd_dot(i) = msg->data[6 + i];
+				cmd.qd_ddot(i) = msg->data[2 * 6 + i];
+			}
+
+			// Read task-space coordinates and velocities
+			size_t offset = 3 * 6;
+			for (size_t i = 0; i < 6; i++)
+			{
+				cmd.xd(i) = msg->data[offset + i];
+				cmd.xd_dot(i) = msg->data[offset + 6 + i];
+			}
+
+			command_buffer_.writeFromNonRT(cmd);
+		
+		}
+
+
+
 		void updateFTsensor(const geometry_msgs::WrenchStamped::ConstPtr &msg)
 		{
 			// Convert Wrench msg to KDL wrench
@@ -303,8 +440,7 @@ namespace arm_controllers{
 			f_cur_[4] = f_meas.torque.y;
 			f_cur_[5] = f_meas.torque.z;
 
-			if (experiment_mode_ == 1 || experiment_mode_ == 2)
-				f_cur_[1] = first_order_lowpass_filter();
+			f_cur_[2] = first_order_lowpass_filter_z(f_cur_[2]);
 		}
 
 		// load gain is not permitted during controller loading?
@@ -314,309 +450,226 @@ namespace arm_controllers{
 		}
 
   		void update(const ros::Time& time, const ros::Duration& period)
-  		{
-			// simple trajectory interpolation from joint command setpoint
+		{
 			dt_ = period.toSec();
 
-			if(total_time_ < 5.0)
-			{
-				task_init();	
-			}
-			else if(total_time_ >= 5.0 && total_time_ < 6.0)
-			{
-				task_via();
-			}
-			else if(total_time_ >= 6.0 && total_time_ < 16.0)
-			{
-				task_ready();
-			}
-			else if (total_time_ >= 16.0 && total_time_ < 17.0)
-			{
-				task_via();
-			}
-			else if (total_time_ >= 17.0 && total_time_ < 27.0)
-			{
-				task_freespace();
-			}
-			else if (total_time_ >= 27.0 && total_time_ < 28.0)
-			{
-				task_via();
-			}
-			else if (total_time_ >= 28.0 && total_time_ < 48.0)
-			{
-				task_contactspace();
-			}
-			else if (total_time_ >= 48.0 && total_time_ < 49.0)
-			{
-				task_via();
-			}
-			else if (total_time_ >= 49.0 && total_time_ < 59.0)
-			{
-				task_homming();
-			}
-
-			// get joint states
-			for (size_t i=0; i<n_joints_; i++)
+			// Read joint states
+			for (int i = 0; i < n_joints_; i++)
 			{
 				q_(i) = joints_[i].getPosition();
 				qdot_(i) = joints_[i].getVelocity();
 			}
 
-			qddot_.data = (qdot_.data - qdot_old_.data) / dt_;
+			// Update dynamics
+			id_solver_->JntToGravity(q_, G_);
+			id_solver_->JntToCoriolis(q_, qdot_, C_);
 
-			// error
-			KDL::JntArray q_error;
-			KDL::JntArray q_error_dot;
-			KDL::JntArray ded;
-			KDL::JntArray tde;
-			KDL::JntArray s;
+			Eigen::VectorXd xdot_desired(6);
+			xdot_desired.setZero();
 
-			q_error.data = Eigen::VectorXd::Zero(n_joints_);
-			q_error_dot.data = Eigen::VectorXd::Zero(n_joints_);
-			ded.data = Eigen::VectorXd::Zero(n_joints_);
-			tde.data = Eigen::VectorXd::Zero(n_joints_);
-			s.data = Eigen::VectorXd::Zero(n_joints_);
+			Eigen::VectorXd xdot_error(6);
+			xdot_error.setZero();
 
-			double db = 0.001;
+			// Forward kinematics to get current end-effector pose
+			KDL::Frame end_effector_pose;
+			fk_solver_->JntToCart(q_, end_effector_pose);
 
-			q_error.data = q_cmd_.data - q_.data;
-			q_error_dot.data = qdot_cmd_.data - qdot_.data;
+			// Extract current end-effector position
+			Eigen::VectorXd current_position(3);
+			current_position << end_effector_pose.p.x(), end_effector_pose.p.y(), end_effector_pose.p.z();
 
-			for(size_t i=0; i<n_joints_; i++)
+			// Compute current end-effector velocity
+			jac_solver_->JntToJac(q_, J_);
+			xdot_ = J_.data * qdot_.data;
+
+			if (control_stage_ == 1)
 			{
-				s(i) = q_error_dot(i) + Ramda_(i)*q_error(i);
+				// --- Stage 1: Move to Position A ---
 
-				if(db < Mbar_(i) && Mbar_(i) > Ramda_(i)/Alpha_(i))
-				{
-					Mbar_dot_(i) = Alpha_(i)*s(i)*s(i) - Alpha_(i)*Omega_(i)*Mbar_(i);
-				}
+				// Compute position error
+				Eigen::VectorXd ex_(6);
+				ex_.setZero();
+				ex_.head(3) = desired_position_A_.head(3) - current_position;
 
-				if(Mbar_(i) < db)
+				// Compute velocity error (desired velocity is zero)
+				Eigen::VectorXd xdot_error(6);
+				xdot_error.setZero();
+				xdot_error.head(3) = -xdot_.head(3);
+
+				// Define task-space PID gains
+				Eigen::VectorXd Kp(6), Kd(6);
+				Kp << 1000, 1000, 1000, 50, 50, 50; // Adjust as needed
+				Kd << 100, 100, 100, 10, 10, 10;    // Adjust as needed
+
+				// Compute desired task-space force
+				Eigen::VectorXd F_desired(6);
+				F_desired = Kp.cwiseProduct(ex_) + Kd.cwiseProduct(xdot_error);
+
+				// Compute joint torques
+				tau_d_.data = J_.data.transpose() * F_desired + C_.data + G_.data;
+
+				// Check if position error is within tolerance
+				if (ex_.head(3).norm() < position_tolerance_)
 				{
-					Mbar_(i) = db;
+					// Switch to Stage 2
+					control_stage_ = 3;
+
+					// Initialize previous desired positions for Stage 2
+					x_d_x_prev_ = current_position(0);
+					x_d_y_prev_ = current_position(1);
+					x_d_z_prev_ = current_position(2);
+
+					// Set initial desired positions
+					xd(0) = x_d_x_prev_;
+					xd(1) = x_d_y_prev_;
+					xd(2) = x_d_z_prev_;
+
+					// Initialize admittance control variables
+					x_eq_z_ = x_d_z_prev_;     // Equilibrium position in z-direction
+					x_desired_z_ = x_eq_z_;    // Desired z-position starts at equilibrium
+					x_dot_desired_z_ = 0.0;    // Initial desired z-velocity is zero
 				}
+			}
+			if (control_stage_ == 2)
+			{
+				// --- Stage 2: Admittance Control in Z-Direction ---
+
+				// Circular motion in x and y
+				double omega = 1.0;     // Angular velocity in rad/s
+				double radius = 0.1;    // Radius in meters
+				double theta = omega * total_time_;
+
+				double x_center = x_d_x_prev_;
+				double y_center = x_d_y_prev_;
+
+				// Desired positions in x and y
+				xd(0) = x_center + radius * cos(theta);
+				xd(1) = y_center + radius * sin(theta);
+
+				// Desired velocities in x and y
+				xdot_desired(0) = -radius * omega * sin(theta);
+				xdot_desired(1) = radius * omega * cos(theta);
+
+				// --- Admittance Control in Z-Direction ---
+
+				// Measured force in z-direction
+				double Fm_z = f_cur_[2]; // f_cur_ is updated from the force sensor callback
+
+				// Desired force in z-direction (e.g., pressing down with Fd_z_ Newtons)
+				double force_error_z = Fd_z_ - Fm_z;
+
+				double x_z_displacement = x_desired_z_ - x_eq_z_;
+
+				// Compute desired acceleration in z-direction using the admittance equation
+				double x_ddot_desired_z = (1.0 / M_) * (force_error_z - B_ * x_dot_desired_z_ - K_ * x_z_displacement);
+
+				// Integrate acceleration to get velocity
+				x_dot_desired_z_ += x_ddot_desired_z * dt_;
+
+				// Integrate velocity to get position
+				x_desired_z_ += x_dot_desired_z_ * dt_;
+
+				// Update desired position and velocity in z-direction
+				xd(2) = x_desired_z_;
+				xdot_desired(2) = x_dot_desired_z_;
+
+				// Compute position and velocity errors
+				ex_.head(3) = xd.head(3) - current_position;
+				xdot_error.head(3) = xdot_desired.head(3) - xdot_.head(3);
+
+				// Define task-space PID gains
+				Eigen::VectorXd Kp(6), Kd(6);
+				Kp << 1000, 1000, 1000, 50, 50, 50; // Tune these gains as needed
+				Kd << 100, 100, 100, 10, 10, 10;
+
+				// Compute desired task-space force
+				Eigen::VectorXd F_desired(6);
+				F_desired = Kp.cwiseProduct(ex_) + Kd.cwiseProduct(xdot_error);
+
+				// Compute joint torques
+				tau_d_.data = J_.data.transpose() * F_desired + C_.data + G_.data;
+
+				// Debugging outputs
+				ROS_INFO_STREAM("Current Z Position: " << current_position(2));
+				ROS_INFO_STREAM("Desired Z Position: " << xd(2));
+				ROS_INFO_STREAM("Force Error Z: " << force_error_z);
+				ROS_INFO_STREAM("Desired Acceleration Z: " << x_ddot_desired_z);
+				ROS_INFO_STREAM("Desired Velocity Z: " << x_dot_desired_z_);
+			}
+			else if (control_stage_ == 3)
+			{
+				// Case 3 code as provided above
+				// --- Stage 3: Direct Force Control in Z-Direction ---
+
+
+				// Circular motion in x and y
+				double omega = 1.0;     // Angular velocity in rad/s
+				double radius = 0.1;    // Radius in meters
+				double theta = omega * total_time_;
+
+				double x_center = x_d_x_prev_;
+				double y_center = x_d_y_prev_;
+
+				// Desired positions in x and y
+				xd(0) = x_center + radius * cos(theta);
+				xd(1) = y_center + radius * sin(theta);
+
+				// Desired velocities in x and y
+				xdot_desired(0) = -radius * omega * sin(theta);
+				xdot_desired(1) = radius * omega * cos(theta);
+
+				// Compute position and velocity errors in x and y
+				ex_.setZero();
+				ex_.head(2) = xd.head(2) - current_position.head(2);
+				xdot_error.setZero();
+				xdot_error.head(2) = xdot_desired.head(2) - xdot_.head(2);
+
+				// Define task-space PID gains for x and y
+				Eigen::VectorXd Kp(6), Kd(6);
+				Kp.setZero();
+				Kd.setZero();
+				Kp(0) = 1000; Kp(1) = 1000; // Adjust as needed
+				Kd(0) = 100;  Kd(1) = 100;
+
+				// Compute desired task-space force for x and y
+				Eigen::VectorXd F_desired(6);
+				F_desired.setZero();
+				F_desired.head(2) = Kp.head(2).cwiseProduct(ex_.head(2)) + Kd.head(2).cwiseProduct(xdot_error.head(2));
+
+				// For z-direction, use direct force control
+				double Fm_z = f_cur_[2]; // Measured force in z-direction
+				double force_error_z = Fd_z_ - Fm_z; // Fd_z_ is desired force in z-direction
+				F_desired(2) = Kf_z_ * force_error_z; // Kf_z_ is force control gain
+
 				
-				if(Mbar_(i) > Ramda_(i)/Alpha_(i))
-				{
-					Mbar_(i) = Ramda_(i)/Alpha_(i) - db;
-				}
 
-				Mbar_(i) = Mbar_(i) + dt_*Mbar_dot_(i);
+				// Compute joint torques
+				tau_d_.data = J_.data.transpose() * F_desired + C_.data + G_.data;
+
+				// Debugging outputs
+				ROS_INFO_STREAM("Current Z Position: " << current_position(2));
+				ROS_INFO_STREAM("Desired Force Z: " << Fd_z_);
+				ROS_INFO_STREAM("Measured Force Z: " << Fm_z);
+				ROS_INFO_STREAM("Force Error Z: " << force_error_z);
+				ROS_INFO_STREAM("Desired Fz Command: " << F_desired(2));
 			}
 
-			// torque command
-			for(size_t i=0; i<n_joints_; i++)
+			// Apply torque commands
+			for (int i = 0; i < n_joints_; i++)
 			{
-				ded(i) = qddot_cmd_(i) + 2.0 * Ramda_(i)*q_error(i) + Ramda_(i)*Ramda_(i)*q_error_dot(i);
-				tde(i) = tau_cmd_old_(i) - Mbar_(i)*qddot_(i);
-				tau_cmd_(i) = Mbar_(i)*ded(i) + tde(i);
+				joints_[i].setCommand(tau_d_(i));
 			}
 
-			for(size_t i=0; i<n_joints_; i++)
-			{
-				joints_[i].setCommand(tau_cmd_(i));
-			}
+			// Update time
+			time_ += dt_;
+			total_time_ += dt_;
+		}
 
-			tau_cmd_old_.data = tau_cmd_.data;
-			qdot_old_.data = qdot_.data;
 
-			KDL::Frame Xdes;
-
-			fk_solver_->JntToCart(q_cmd_, Xdes);
-
-			SaveData_[0] = total_time_;
-			SaveData_[1] = 0.122;
-			SaveData_[2] = Xdes.p(2);
-			SaveData_[3] = Fd_;
-			SaveData_[4] = f_cur_(1);
-			SaveData_[5] = f_cur_buffer_;
-			SaveData_[6] = B_buffer_;
-
-			msg_SaveData_.data.clear();
-
-			for (size_t i = 0; i < SaveDataMax; i++)
-			{
-				msg_SaveData_.data.push_back(SaveData_[i]);
-			}
-
-			pub_SaveData_.publish(msg_SaveData_);
-
-			time_ = time_ + dt_;
-			total_time_ = total_time_ + dt_;				
-  		}
 
   		void stopping(const ros::Time& time) { }
 
-		void task_via()
-		{
-			time_ = 0.0;
-
-			for (size_t i = 0; i < n_joints_; i++)
-			{
-				q_init_(i) = joints_[i].getPosition();
-				q_cmd_(i) = q_cmd_end_(i);
-				qdot_cmd_(i) = 0.0;
-				qddot_cmd_(i) = 0.0;
-			}
-		}
-
-		void task_init()
-		{
-			for (size_t i=0; i<n_joints_; i++)
-			{
-				q_cmd_(i) = 0.0;
-				qdot_cmd_(i) = 0.0;
-				qddot_cmd_(i) = 0.0;
-			}
-
-			q_cmd_end_.data = q_cmd_.data;
-		}
-
-		void task_ready()
-		{
-			for (size_t i=0; i<n_joints_; i++)
-			{
-				if (i == 2 || i == 4)
-				{
-					q_cmd_(i) = trajectory_generator_pos(q_init_(i), PI/2.0, 10.0);
-					qdot_cmd_(i) = trajectory_generator_vel(q_init_(i), PI/2.0, 10.0);
-					qddot_cmd_(i) = trajectory_generator_acc(q_init_(i), PI/2.0, 10.0);
-				}
-				else
-				{
-					q_cmd_(i) = q_init_(i);
-					qdot_cmd_(i) = 0.0;
-					qddot_cmd_(i) = 0.0;
-				}
-			}
-
-			q_cmd_end_.data = q_cmd_.data;
-		}
-
-		void task_freespace()
-		{
-			KDL::Frame start;
-			KDL::Twist target_vel;
-			KDL::JntArray cart_cmd;
-
-			cart_cmd.data = Eigen::VectorXd::Zero(3);
-
-			fk_solver_->JntToCart(q_init_, start);
-
-			for (size_t i=0; i<6; i++)
-			{
-				if(i == 2)
-				{
-					target_vel(i) = trajectory_generator_vel(start.p(i), 0.122, 10.0);
-				}
-				else
-				{
-					target_vel(i) = 0.0;
-				}
-			}
-
-			ik_vel_solver_->CartToJnt(q_cmd_, target_vel, qdot_cmd_);
-
-			for (size_t i=0; i<n_joints_; i++)
-			{
-				q_cmd_(i) = q_cmd_(i) + qdot_cmd_(i)*dt_;
-				qddot_cmd_(i) = (qdot_cmd_(i) - qdot_cmd_old_(i))/dt_;
-				qdot_cmd_old_(i) = qdot_cmd_(i);
-			}
-
-			q_cmd_end_.data = q_cmd_.data;			
-		}
-
-		void task_contactspace()
-		{
-			KDL::Frame start;
-
-			if (experiment_mode_ == 0 || experiment_mode_ == 1)
-				Fd_ = Fd_temp_;
-			else if (experiment_mode_ == 2)
-				Fd_ = Fd_temp_ * 1 / 5 * sin(2 * PI * 0.2 * total_time_) + Fd_temp_;
-
-				fk_solver_->JntToCart(q_init_, start);
-
-			for (size_t i = 0; i < 6; i++)
-			{
-				if (i == 0)
-				{
-					Xc_dot_(i) = trajectory_generator_vel(start.p(i), 0.5, 20.0);
-				}
-				else if (i == 2)
-				{
-					Fe_ = f_cur_[1];
-					PI_ = PI_old_ + dt_ * (Fd_old_ - Fe_old_) / B_;
-					B_buffer_ = B_ + del_B_;
-					Xc_ddot_(i) = 1/M_*((Fe_ - Fd_) - (B_ + del_B_)*Xc_dot_old_(i));
-					Xc_dot_(i) = Xc_dot_old_(i) + Xc_ddot_(i)*dt_;
-					del_B_ = B_ / Xc_dot_(i) * PI_;
-					Xc_dot_old_(i) = Xc_dot_(i);
-					Fd_old_ = Fd_;
-					Fe_old_ = Fe_;
-					PI_old_ = PI_;
-				}
-				else
-				{
-					Xc_ddot_(i) = 0.0;
-					Xc_dot_(i) = 0.0;
-				}
-			}
-			
-			ik_vel_solver_->CartToJnt(q_cmd_, Xc_dot_, qdot_cmd_);
-
-			for (size_t i=0; i<n_joints_; i++)
-			{
-				q_cmd_(i) = q_cmd_(i) + qdot_cmd_(i)*dt_;
-				qddot_cmd_(i) = (qdot_cmd_(i) - qdot_cmd_old_(i))/dt_;
-				qdot_cmd_old_(i) = qdot_cmd_(i);
-			}
-
-			q_cmd_end_.data = q_cmd_.data;
-		}
-
-		void task_homming()
-		{
-			for (size_t i = 0; i < n_joints_; i++)
-			{
-				q_cmd_(i) = trajectory_generator_pos(q_init_(i), 0.0, 10.0);
-				qdot_cmd_(i) = trajectory_generator_vel(q_init_(i), 0.0, 10.0);
-				qddot_cmd_(i) = trajectory_generator_acc(q_init_(i), 0.0, 10.0);
-			}
-
-			q_cmd_end_.data = q_cmd_.data;
-		}
-
-		double trajectory_generator_pos(double dStart, double dEnd, double dDuration)
-		{
-			double dA0 = dStart;
-			double dA3 = (20.0*dEnd - 20.0*dStart) / (2.0*dDuration*dDuration*dDuration);
-			double dA4 = (30.0*dStart - 30*dEnd) / (2.0*dDuration*dDuration*dDuration*dDuration);
-			double dA5 = (12.0*dEnd - 12.0*dStart) / (2.0*dDuration*dDuration*dDuration*dDuration*dDuration);
-
-			return dA0 + dA3*time_*time_*time_ + dA4*time_*time_*time_*time_ + dA5*time_*time_*time_*time_*time_;
-		}
-
-		double trajectory_generator_vel(double dStart, double dEnd, double dDuration)
-		{
-			double dA0 = dStart;
-			double dA3 = (20.0*dEnd - 20.0*dStart) / (2.0*dDuration*dDuration*dDuration);
-			double dA4 = (30.0*dStart - 30*dEnd) / (2.0*dDuration*dDuration*dDuration*dDuration);
-			double dA5 = (12.0*dEnd - 12.0*dStart) / (2.0*dDuration*dDuration*dDuration*dDuration*dDuration);
-
-			return 3.0*dA3*time_*time_ + 4.0*dA4*time_*time_*time_ + 5.0*dA5*time_*time_*time_*time_;
-		}
-
-		double trajectory_generator_acc(double dStart, double dEnd, double dDuration)
-		{
-			double dA0 = dStart;
-			double dA3 = (20.0*dEnd - 20.0*dStart) / (2.0*dDuration*dDuration*dDuration);
-			double dA4 = (30.0*dStart - 30*dEnd) / (2.0*dDuration*dDuration*dDuration*dDuration);
-			double dA5 = (12.0*dEnd - 12.0*dStart) / (2.0*dDuration*dDuration*dDuration*dDuration*dDuration);
-
-			return 6.0*dA3*time_ + 12.0*dA4*time_*time_ + 20.0*dA5*time_*time_*time_;
-		}		
+	
 
 		double first_order_lowpass_filter()
 		{
@@ -624,6 +677,14 @@ namespace arm_controllers{
 			filt_old_ = filt_;
 
 			return filt_;
+		}
+
+		double first_order_lowpass_filter_z(double input)
+		{
+			double tau_z = 1.0 / (2 * PI * 10.0); // Adjust the cutoff frequency as needed
+			double filt_z = (tau_z * filt_z_old_ + dt_ * input) / (tau_z + dt_);
+			filt_z_old_ = filt_z;
+			return filt_z;
 		}
 
 	private:
@@ -683,9 +744,48 @@ namespace arm_controllers{
 
 		ros::Publisher pub_SaveData_;
 
-		std_msgs::Float64MultiArray msg_SaveData_;			
+		std_msgs::Float64MultiArray msg_SaveData_;	
+
+		// ROS subscriber to /motion_command
+		ros::Subscriber sub_command_;
+		realtime_tools::RealtimeBuffer<Commands> command_buffer_;
+
+		KDL::JntArray qd_, qd_dot_, qd_ddot_, q_cmd_dot;	
+		//task space 
+    	Eigen::VectorXd xd, xd_dot;     // Desired task-space position (6 elements)
+		KDL::Jacobian J_;            // Jacobian at current q_
+		Eigen::VectorXd xdot_;       // Current end-effector velocity
+		boost::scoped_ptr<KDL::ChainJntToJacSolver> jac_solver_;
+		KDL::JntArray C_;
+		
+    	Eigen::MatrixXd M_joint_; // Inertia matrix in joint space
+
+		KDL::JntArray tau_d_;
+		Eigen::VectorXd ex_; 
+		KDL::Twist ex_temp_; 
+
+
+		//Admitance
+		int control_stage_;
+		double position_tolerance_;
+		Eigen::VectorXd desired_position_A_;
+		Eigen::VectorXd desired_position_B_;
+		double x_d_x_prev_, x_d_y_prev_, x_d_z_prev_;
+		double x_dot_desired_x, x_dot_desired_y;
+		double Fd_z_, Kf_z_;
+
+		double x_desired_z_;       // Desired position in z-direction
+		double x_dot_desired_z_;   // Desired velocity in z-direction
+		double K_;                 // Virtual stiffness in z-direction
+		double x_eq_z_; // Equilibrium position in z-direction
+		double filt_z_old_;
+
+		// Variables for Case 3
+		
+		
+		Eigen::VectorXd xdot_error; // Velocity error vector
+		double max_Fz;     // Maximum allowable force in z-direction
 	};
 }
 
 PLUGINLIB_EXPORT_CLASS(arm_controllers::AdaptiveImpedanceController, controller_interface::ControllerBase)
-
