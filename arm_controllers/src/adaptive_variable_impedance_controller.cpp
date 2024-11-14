@@ -348,7 +348,18 @@ namespace arm_controllers{
 			xdot_error = Eigen::VectorXd::Zero(6);
 			max_Fz = 50.0; // Set maximum force limit as needed
 
-   			return true;
+
+			// In your init function
+			double mass_value = 1.0;      // Adjust as needed
+			double damping_value = 10.0;  // Adjust as needed
+			double stiffness_value = 100.0; // Adjust as needed
+
+			//impednace controller
+			Md = Eigen::MatrixXd::Identity(6, 6) * mass_value;
+			Kd = Eigen::MatrixXd::Identity(6, 6) * damping_value;
+			Kp = Eigen::MatrixXd::Identity(6, 6) * stiffness_value;
+
+						return true;
   		}
 
 		void starting(const ros::Time& time)
@@ -512,7 +523,7 @@ namespace arm_controllers{
 				if (ex_.head(3).norm() < position_tolerance_)
 				{
 					// Switch to Stage 2
-					control_stage_ = 3;
+					control_stage_ = 4;
 
 					// Initialize previous desired positions for Stage 2
 					x_d_x_prev_ = current_position(0);
@@ -534,7 +545,7 @@ namespace arm_controllers{
 			{
 				// --- Stage 2: Admittance Control in Z-Direction ---
 
-				// Circular motion in x and y
+				// Circular motion in x and y (position control)
 				double omega = 1.0;     // Angular velocity in rad/s
 				double radius = 0.1;    // Radius in meters
 				double theta = omega * total_time_;
@@ -553,14 +564,16 @@ namespace arm_controllers{
 				// --- Admittance Control in Z-Direction ---
 
 				// Measured force in z-direction
-				double Fm_z = f_cur_[2]; // f_cur_ is updated from the force sensor callback
+				double Fm_z = f_cur_[2]; // Force sensor reading
 
 				// Desired force in z-direction (e.g., pressing down with Fd_z_ Newtons)
 				double force_error_z = Fd_z_ - Fm_z;
 
+				// Displacement from equilibrium in z
 				double x_z_displacement = x_desired_z_ - x_eq_z_;
 
-				// Compute desired acceleration in z-direction using the admittance equation
+				// **Admittance Equation** (solving for acceleration):
+				// x_ddot_desired_z = (1 / M_) * (force_error_z - B_ * x_dot_desired_z_ - K_ * x_z_displacement)
 				double x_ddot_desired_z = (1.0 / M_) * (force_error_z - B_ * x_dot_desired_z_ - K_ * x_z_displacement);
 
 				// Integrate acceleration to get velocity
@@ -577,32 +590,26 @@ namespace arm_controllers{
 				ex_.head(3) = xd.head(3) - current_position;
 				xdot_error.head(3) = xdot_desired.head(3) - xdot_.head(3);
 
-				// Define task-space PID gains
+				// Define task-space PD gains
 				Eigen::VectorXd Kp(6), Kd(6);
-				Kp << 1000, 1000, 1000, 50, 50, 50; // Tune these gains as needed
-				Kd << 100, 100, 100, 10, 10, 10;
+				Kp << 1000, 1000, 1000, 50, 50, 50; // Proportional gains
+				Kd << 100, 100, 100, 10, 10, 10;    // Derivative gains
 
-				// Compute desired task-space force
+				// **Control Law**:
+				// F_desired = Kp * ex_ + Kd * xdot_error
 				Eigen::VectorXd F_desired(6);
 				F_desired = Kp.cwiseProduct(ex_) + Kd.cwiseProduct(xdot_error);
 
-				// Compute joint torques
+				// **Compute Joint Torques**:
+				// tau_d_ = J^T * F_desired + Coriolis + Gravity
 				tau_d_.data = J_.data.transpose() * F_desired + C_.data + G_.data;
-
-				// Debugging outputs
-				ROS_INFO_STREAM("Current Z Position: " << current_position(2));
-				ROS_INFO_STREAM("Desired Z Position: " << xd(2));
-				ROS_INFO_STREAM("Force Error Z: " << force_error_z);
-				ROS_INFO_STREAM("Desired Acceleration Z: " << x_ddot_desired_z);
-				ROS_INFO_STREAM("Desired Velocity Z: " << x_dot_desired_z_);
 			}
+
 			else if (control_stage_ == 3)
 			{
-				// Case 3 code as provided above
 				// --- Stage 3: Direct Force Control in Z-Direction ---
 
-
-				// Circular motion in x and y
+				// Circular motion in x and y (position control)
 				double omega = 1.0;     // Angular velocity in rad/s
 				double radius = 0.1;    // Radius in meters
 				double theta = omega * total_time_;
@@ -624,35 +631,103 @@ namespace arm_controllers{
 				xdot_error.setZero();
 				xdot_error.head(2) = xdot_desired.head(2) - xdot_.head(2);
 
-				// Define task-space PID gains for x and y
+				// Define task-space PD gains for x and y
 				Eigen::VectorXd Kp(6), Kd(6);
 				Kp.setZero();
 				Kd.setZero();
-				Kp(0) = 1000; Kp(1) = 1000; // Adjust as needed
-				Kd(0) = 100;  Kd(1) = 100;
+				Kp(0) = 1000; Kp(1) = 1000; // Proportional gains
+				Kd(0) = 100;  Kd(1) = 100;  // Derivative gains
 
 				// Compute desired task-space force for x and y
 				Eigen::VectorXd F_desired(6);
 				F_desired.setZero();
 				F_desired.head(2) = Kp.head(2).cwiseProduct(ex_.head(2)) + Kd.head(2).cwiseProduct(xdot_error.head(2));
 
-				// For z-direction, use direct force control
-				double Fm_z = f_cur_[2]; // Measured force in z-direction
-				double force_error_z = Fd_z_ - Fm_z; // Fd_z_ is desired force in z-direction
-				F_desired(2) = Kf_z_ * force_error_z; // Kf_z_ is force control gain
+				// --- Direct Force Control in Z-Direction ---
 
-				
+				// Measured force in z-direction
+				double Fm_z = f_cur_[2]; // Force sensor reading
 
-				// Compute joint torques
+				// **Force Error**:
+				// force_error_z = Fd_z_ - Fm_z
+				double force_error_z = Fd_z_ - Fm_z;
+
+				// **Compute Desired Force Command**:
+				// F_desired(2) = Kf_z_ * force_error_z
+				F_desired(2) = Kf_z_ * force_error_z; // Kf_z_ is the force control gain
+
+				// **Compute Joint Torques**:
+				// tau_d_ = J^T * F_desired + Coriolis + Gravity
 				tau_d_.data = J_.data.transpose() * F_desired + C_.data + G_.data;
-
-				// Debugging outputs
-				ROS_INFO_STREAM("Current Z Position: " << current_position(2));
-				ROS_INFO_STREAM("Desired Force Z: " << Fd_z_);
-				ROS_INFO_STREAM("Measured Force Z: " << Fm_z);
-				ROS_INFO_STREAM("Force Error Z: " << force_error_z);
-				ROS_INFO_STREAM("Desired Fz Command: " << F_desired(2));
 			}
+
+			else if (control_stage_ == 4)
+			{
+				// Time variable
+				double t = total_time_;
+
+				// Circular trajectory parameters
+				double radius = 0.1;    // Adjust as needed
+				double omega = 0.5;     // Adjust as needed
+				double x_center = x_d_x_prev_;  // Center of the circle in x
+				double y_center = x_d_y_prev_;  // Center of the circle in y
+
+				// Define desired z position
+				double desired_z = 0.1; // Set this to the desired height
+
+				// **Desired Position (x_d)**
+				// x_d = [x_d_x, x_d_y, x_d_z, roll_d, pitch_d, yaw_d]^T
+				xd(0) = x_center + radius * cos(omega * t);  // x_d_x
+				xd(1) = y_center + radius * sin(omega * t);  // x_d_y
+				xd(2) = desired_z;                           // x_d_z
+				xd(3) = 0.0;  // Desired roll (assuming zero)
+				xd(4) = 0.0;  // Desired pitch (assuming zero)
+				xd(5) = 0.0;  // Desired yaw (assuming zero)
+
+				// **Desired Velocity (\dot{x}_d)**
+				xd_dot(0) = -radius * omega * sin(omega * t);  // \dot{x}_d_x
+				xd_dot(1) =  radius * omega * cos(omega * t);  // \dot{x}_d_y
+				xd_dot(2) = 0.0;  // \dot{x}_d_z
+				xd_dot(3) = 0.0;  // \dot{roll}_d
+				xd_dot(4) = 0.0;  // \dot{pitch}_d
+				xd_dot(5) = 0.0;  // \dot{yaw}_d
+
+				// **Desired Acceleration (\ddot{x}_d)**
+				Eigen::VectorXd xddot_desired(6);
+				xddot_desired.setZero();
+				xddot_desired(0) = -radius * omega * omega * cos(omega * t);  // \ddot{x}_d_x
+				xddot_desired(1) = -radius * omega * omega * sin(omega * t);  // \ddot{x}_d_y
+				// \ddot{x}_d_z = 0.0 (already zero)
+
+				// **Compute Position Error (\tilde{x})**
+				// \tilde{x} = x_d - x
+				ex_.setZero();
+				ex_.head(3) = xd.head(3) - current_position.head(3);
+
+				// **Compute Velocity Error (\dot{\tilde{x}})**
+				// \dot{\tilde{x}} = \dot{x}_d - \dot{x}
+				xdot_error.setZero();
+				xdot_error.head(3) = xd_dot.head(3) - xdot_.head(3);
+
+				// **External Force Measurement (h_e)**
+				// Assuming zero torque measurements
+				Eigen::VectorXd he(6);
+				he.setZero();
+				he(0) = f_cur_.force.x();  // Measured force in x
+				he(1) = f_cur_.force.y();  // Measured force in y
+				he(2) = f_cur_.force.z();  // Measured force in z
+				// he(3), he(4), he(5) are assumed zero (torque measurements)
+
+				// **Compute Desired Operational Space Force (F_imp)**
+				// F_imp = M_d * \ddot{x}_d + K_D * \dot{\tilde{x}} + K_P * \tilde{x} - h_e
+				Eigen::VectorXd F_imp = Md * xddot_desired + Kd * xdot_error + Kp * ex_ - he;
+
+				// **Compute Joint Torques (\tau_d)**
+				// \tau_d = J^T * F_imp + C + G
+				tau_d_.data = J_.data.transpose() * F_imp + C_.data + G_.data;
+			}
+
+
 
 			// Apply torque commands
 			for (int i = 0; i < n_joints_; i++)
@@ -785,6 +860,11 @@ namespace arm_controllers{
 		
 		Eigen::VectorXd xdot_error; // Velocity error vector
 		double max_Fz;     // Maximum allowable force in z-direction
+
+		//impendace controller
+		Eigen::MatrixXd Md; // Desired mass matrix
+		Eigen::MatrixXd Kd; // Damping matrix
+		Eigen::MatrixXd Kp; // Stiffness matrix
 	};
 }
 
