@@ -286,6 +286,10 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
 
         sub_control_mode_ = n.subscribe("/control_mode", 10, &Computed_Torque_Controller::controlModeCB, this);
 
+        pub_ex_ = n.advertise<std_msgs::Float64MultiArray>("task_space_error", 1000);
+        pub_force_ = n.advertise<std_msgs::Float64MultiArray>("task_space_force", 1000);
+
+
         control_mode_buffer_.writeFromNonRT(1);
 
 
@@ -587,8 +591,24 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                     ROS_INFO("tau_[%d]: %f", i, tau_d_(i));
                 }
 
-                
-
+                //plotting stuff
+                std_msgs::Float64MultiArray msg_ex;
+                msg_ex.data.resize(ex_.size());
+                for (size_t i = 0; i < ex_.size(); ++i)
+                {
+                    msg_ex.data[i] = ex_(i);
+                }
+                pub_ex_.publish(msg_ex);
+                                
+                std_msgs::Float64MultiArray msg_force;
+            msg_force.data.resize(6); // Task-space forces are 6D (3 linear + 3 angular)
+            msg_force.data[0] = F_desired.force(0);
+            msg_force.data[1] = F_desired.force(1);
+            msg_force.data[2] = F_desired.force(2);
+            msg_force.data[3] = F_desired.torque(0);
+            msg_force.data[4] = F_desired.torque(1);
+            msg_force.data[5] = F_desired.torque(2);
+            pub_force_.publish(msg_force);
 
                 ROS_INFO("-----------------------------------------------------------------------");
                 ROS_INFO("- ");
@@ -893,6 +913,12 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
     std::vector<double> segment_durations_;
     int current_segment_index_ = 0;
     double segment_start_time_ = 0.0;
+
+    //erorri
+    // ROS publishers for task-space error and force
+    ros::Publisher pub_ex_;
+    ros::Publisher pub_force_;
+
 
 
 };

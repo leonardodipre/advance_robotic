@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="vertical_rectangle">
+    <pose>0 0 0 0 0 0</pose>
+    <link name="link">
+      <!-- Base visual without texture -->
+      <visual name="base_visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.1 0.2 0.2</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.5 0.5 0.5 1</ambient>
+          <diffuse>0.5 0.5 0.5 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- Textured visual on the desired face -->
+      <visual name="textured_face">
+        <!-- Left Face -->
+        <pose>-0.0505 0 0 0 0 -1.5708</pose> 
+
+        <geometry>
+          <box>
+            <size>0.2 0.001 0.2</size> <!-- Thin box to represent the textured face -->
+          </box>
+        </geometry>
+        <material>
+          <script>
+            <uri>model://object_det/materials/scripts</uri>
+            <uri>model://object_det/materials/textures</uri>
+            <name>Marker</name>
+          </script>
+          <ambient>1.0 1.0 1.0 1</ambient>
+          <diffuse>1.0 1.0 1.0 1</diffuse>
+          <texture>
+            <diffuse>model://object_det/materials/textures/marker.png</diffuse>
+            <wrap_s>CLAMP</wrap_s>
+            <wrap_t>CLAMP</wrap_t>
+          </texture>
+        </material>
+      </visual>
+
+      <!-- Collision geometry for physics -->
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.1 0.2 0.2</size>
+          </box>
+        </geometry>
+      </collision>
+
+      <!-- Inertia for the cube -->
+      <inertial>
+        <mass>1.0</mass>
+        <inertia>
+          <ixx>0.01667</ixx>
+          <ixy>0.0</ixy>
+          <ixz>0.0</ixz>
+          <iyy>0.01667</iyy>
+          <iyz>0.0</iyz>
+          <izz>0.00667</izz>
+        </inertia>
+      </inertial>
+    </link>
+  </model>
+</sdf>

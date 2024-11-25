@@ -89,3 +89,32 @@ ESERCIZIO 6
 
 
     roslaunch elfin_gazebo elfin3_experiment1_world.launch controller:=adaptive_impedance_controller
+
+
+
+Packege
+    fetch transform 
+
+
+Personal:   
+
+    roslaunch elfin_gazebo detection_word.launch controller:=adaptive_impedance_controller
+
+    
+
+for conda
+
+only for one taerminal
+
+
+    source /root/miniconda3/etc/profile.d/conda.sh
+
+    conda activate ros_yolo_env
+
+    rosrun arm_controllers  torch_node.py
+
+    rosrun arm_controllers depth.py
+
+
+
+   

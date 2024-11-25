@@ -127,5 +127,7 @@ catkin_install_python(PROGRAMS
   scripts/arunco_vs.py
   scripts/aruco_movment.py
   scripts/trajectory_planning.py
+  scripts/depth.py
+
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

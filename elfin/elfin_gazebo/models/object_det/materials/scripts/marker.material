@@ -1,0 +1,15 @@
+material Marker
+{
+  technique
+  {
+    pass
+    {
+      texture_unit
+      {
+        texture marker.png
+        tex_address_mode wrap
+        filtering anisotropic
+      }
+    }
+  }
+}

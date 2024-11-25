@@ -448,7 +448,7 @@
   </joint>
 
   <xacro:sensor_d435 name="relasense" parent="elfin_dummy_gripper">
-    <origin xyz="0.04 0 -0.05" rpy="${-PI} ${3*PI/2} 0"/>
+    <origin xyz="0.0 0.0 -0.002" rpy="${0} ${3*PI/2} 0"/>
   </xacro:sensor_d435>
 
 

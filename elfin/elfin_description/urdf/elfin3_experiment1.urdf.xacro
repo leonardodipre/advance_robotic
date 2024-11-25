@@ -3,6 +3,9 @@
 
   <xacro:include filename="$(find elfin_description)/urdf/materials.xacro" />
 
+  <xacro:include filename="$(find elfin_description)/urdf/_d435.urdf.xacro"/>
+
+
   <xacro:include filename="$(find elfin_description)/urdf/elfin_robot_experiment1.gazebo" />
 
   <xacro:include filename="$(find elfin_description)/urdf/elfin_transmission_experiment1.xacro" />
@@ -508,5 +511,10 @@
     <child link="elfin_tool_ball"/>
     <origin xyz="0 -0.04 0" rpy="0 0 0" />
   </joint>  
+
+  <xacro:sensor_d435 name="relasense" parent="elfin_link6">
+    <origin xyz="0.0 -0.091 0.0" rpy="0 0 ${-PI/2}"/>
+  </xacro:sensor_d435>
+
 
 </robot> 
