@@ -23,6 +23,6 @@
 
   <!-- Spawn Marker -->
  <node name="spawn_marker" pkg="gazebo_ros" type="spawn_model" output="screen"
-    args="-sdf -model aruco_marker -file /root/src/elfin/elfin_gazebo/models/aruco_marker/model.sdf -x 0.5 -y 0 -z 0" />
+    args="-sdf -model aruco_marker -file /root/src/elfin/elfin_gazebo/models/aruco_marker/model.sdf -x 0.4 -y 0 -z 0" />
 
 </launch>

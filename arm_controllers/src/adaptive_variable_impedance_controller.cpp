@@ -152,8 +152,8 @@ namespace arm_controllers {
 
             // Initialize desired position
             desired_position_A_ = Eigen::VectorXd::Zero(3);
-            desired_position_A_ << 0.4, 0.0, 0.25;
-
+            desired_position_A_ << 0.38, 0.0, 0.05;
+            
            
 
             

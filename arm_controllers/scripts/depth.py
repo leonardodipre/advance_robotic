@@ -4,7 +4,7 @@ import cv2
 import cv2.aruco as aruco
 import numpy as np
 from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import PoseStamped, PoseArray
+from geometry_msgs.msg import PoseStamped, PoseArray, PointStamped
 from cv_bridge import CvBridge, CvBridgeError
 import tf2_ros
 import tf2_geometry_msgs
@@ -30,11 +30,18 @@ class ArucoDetectorNode:
         # New subscriber for /detection/object_poses
         self.object_poses_sub = rospy.Subscriber('/detection/object_poses', PoseArray, self.object_poses_callback)
 
-
+        # New subscriber for /detection/centers
+        #self.centers_sub = rospy.Subscriber('/detection/centers', PointStamped, self.centers_callback)
+        #self.centers_sub = rospy.Subscriber('/position_after_depth', PointStamped, self.centers_callback)
+        self.centers_sub = rospy.Subscriber('/detection/positions', PointStamped, self.centers_callback)
+        
         # Publishers
         self.pose_pub = rospy.Publisher('aruco_pose', PoseStamped, queue_size=10)
         self.transformed_pose_pub = rospy.Publisher('transformed_aruco_pose', PoseStamped, queue_size=10)
         self.transformed_object_pose_pub = rospy.Publisher('transformed_object_poses', PoseArray, queue_size=10)
+        
+        # New publisher for transformed centers
+        self.transformed_centers_pub = rospy.Publisher('transformed_centers', PointStamped, queue_size=10)
 
         # TF Buffer and Listener
         self.tf_buffer = tf2_ros.Buffer(rospy.Duration(10.0))  # TF buffer length
@@ -154,6 +161,61 @@ class ArucoDetectorNode:
         # Publish the transformed PoseArray
         self.transformed_object_pose_pub.publish(transformed_pose_array)
         rospy.loginfo("Transformed object poses published in base frame.")
+
+    def centers_callback(self, msg):
+        """
+        Callback for /detection/centers topic.
+        Transforms the point from camera frame to base frame and publishes it.
+        """
+        # msg is of type PointStamped
+        rospy.loginfo("Received point from /detection/centers")
+
+        # Create a PoseStamped message with the point and identity orientation
+        pose_msg = PoseStamped()
+        pose_msg.header = msg.header
+        pose_msg.header.frame_id = self.camera_frame
+        pose_msg.pose.position = msg.point
+        # Set orientation to identity quaternion
+        pose_msg.pose.orientation.x = 0.0
+        pose_msg.pose.orientation.y = 0.0
+        pose_msg.pose.orientation.z = 0.0
+        pose_msg.pose.orientation.w = 1.0
+
+        # Attempt to transform the pose to the base frame
+        # Attempt to transform the pose to the base frame
+        try:
+            # Log the received x, y, z from the message
+            rospy.loginfo(f"Received Point (Camera Frame): x={msg.point.x}, y={msg.point.y}, z={msg.point.z}")
+
+            # Wait for the transform to become available (up to 1 second)
+            if self.tf_buffer.can_transform(self.base_frame, self.camera_frame, msg.header.stamp, rospy.Duration(1.0)):
+                # Lookup the transform and apply it
+                transform = self.tf_buffer.lookup_transform(self.base_frame, self.camera_frame, msg.header.stamp)
+                pose_transformed = tf2_geometry_msgs.do_transform_pose(pose_msg, transform)
+
+                # Extract the transformed x, y, z
+                transformed_x = pose_transformed.pose.position.x
+                transformed_y = pose_transformed.pose.position.y
+                transformed_z = pose_transformed.pose.position.z
+
+                # Log the transformed x, y, z
+                rospy.loginfo(f"Transformed Point (Base Frame): x={transformed_x}, y={transformed_y}, z={transformed_z}")
+
+                # Create a PointStamped message for publishing
+                transformed_point = PointStamped()
+                transformed_point.header = pose_transformed.header
+                transformed_point.point.x = transformed_x
+                transformed_point.point.y = transformed_y
+                transformed_point.point.z = transformed_z
+
+                # Publish the transformed point
+                self.transformed_centers_pub.publish(transformed_point)
+                rospy.loginfo("Transformed center point published in base frame.")
+            else:
+                rospy.logwarn("Transform from camera frame to base frame not available for centers.")
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+            rospy.logerr(f"Failed to transform center point: {e}")
+
 
     def main(self):
         rospy.spin()

@@ -128,6 +128,7 @@ catkin_install_python(PROGRAMS
   scripts/aruco_movment.py
   scripts/trajectory_planning.py
   scripts/depth.py
+  scripts/camera_transform.py
 
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

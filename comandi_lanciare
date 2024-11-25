@@ -115,6 +115,8 @@ only for one taerminal
 
     rosrun arm_controllers depth.py
 
+    rosrun arm_controllers camera_transform.py
+
 
 
    
