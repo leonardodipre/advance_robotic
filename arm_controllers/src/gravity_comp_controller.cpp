@@ -348,6 +348,8 @@ class GravityCompController : public controller_interface::Controller<hardware_i
         wall.height = 1.0;                        // Height along z-axis
         wall.safety_margin = 0.05;                // Optional safety margin (adjust as needed)
         rectangular_obstacles_.push_back(wall);
+
+       
         
         //Retrive joint for ob avoidance
         joint_segment_indices_.resize(n_joints_);

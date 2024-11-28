@@ -552,8 +552,8 @@ class Computed_Torque_Controller : public controller_interface::Controller<hardw
                 KDL::Vector Kp_trans(600, 600, 600); // Increase proportional gains
                 KDL::Vector Kd_trans(80, 80, 80); 
 
-                KDL::Vector Kp_rot( 15.0,  15.0, 15.0);
-                KDL::Vector Kd_rot( 15.0,  15.0,  15.0);
+                KDL::Vector Kp_rot( 30.0,  30.0, 0.0);
+                KDL::Vector Kd_rot( 20.0,  20.0,  0.0);
 
                 KDL::Vector ki_trans(0.13, 0.13 , 0.13);
 

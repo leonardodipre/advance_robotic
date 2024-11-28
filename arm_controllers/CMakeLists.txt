@@ -129,6 +129,7 @@ catkin_install_python(PROGRAMS
   scripts/trajectory_planning.py
   scripts/depth.py
   scripts/camera_transform.py
+  scripts/plan_final.py
 
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

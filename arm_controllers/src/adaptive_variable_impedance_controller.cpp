@@ -20,6 +20,9 @@
 #include <boost/scoped_ptr.hpp>
 
 #include <Eigen/Dense>
+#include "std_msgs/Int32.h"
+
+
 
 #define PI 3.14159265358979323846
 
@@ -32,6 +35,8 @@ struct Commands
     Eigen::VectorXd xd_dot; // Desired task-space velocity (6 elements)
     Commands() {}
 };
+
+
 
 namespace arm_controllers {
 
@@ -152,7 +157,8 @@ namespace arm_controllers {
 
             // Initialize desired position
             desired_position_A_ = Eigen::VectorXd::Zero(3);
-            desired_position_A_ << 0.38, 0.0, 0.05;
+            desired_position_A_ << 0.4, 0.0, 0.3;
+             
             
            
 
@@ -164,11 +170,59 @@ namespace arm_controllers {
             sub_forcetorque_sensor_ = n.subscribe<geometry_msgs::WrenchStamped>("/elfin/elfin/ft_sensor_topic", 1, &AdaptiveImpedanceController::updateFTsensor, this);
             sub_command_ = n.subscribe("/motion_command", 1000, &AdaptiveImpedanceController::commandPosition, this);
 
+            // Yolo pose
+            sub_transformed_centers_ = n.subscribe("/transformed_centers", 1, &AdaptiveImpedanceController::transformedCentersCB, this);
+            //comand 
+            sub_controller_command_ = n.subscribe("/controller_command", 1, &AdaptiveImpedanceController::controllerCommandCB, this);
+            control_stage_buffer_.writeFromNonRT(0);
+
+            //error
+            pub_end_effector_error_ = n.advertise<geometry_msgs::Vector3Stamped>("end_effector_error", 10);
+
+
             // Initialize control stage
+            
             control_stage_ = 1;
+
+            //equilibrium
+            contact_detected_ = false;
+            contact_force_threshold_ = 3.0;  // Adjust as needed
+
+            // Initialize admittance control parameters
+            M_adm_ = 1.0;    // Mass (kg)
+            B_adm_ = 20.0;   // Damping (N·s/m)
+            K_adm_ = 100.0;  // Stiffness (N/m)
+
+            x_desired_ = Eigen::Vector3d::Zero();
+            x_dot_desired_ = Eigen::Vector3d::Zero();
+            x_eq_ = Eigen::Vector3d::Zero();
+
+
+
+            // Initialize the desired force value in the x-direction
+           
+            desired_force_x_ = 1.0;
+            // Load PID gains for x-direction force control
+            
+            Kp_x_ =  100.0;
+            Kd_x_= 10.0;
+            // Load PID gains for z-direction position control
+            n.param("Kp_z", Kp_z_, 1000.0);
+            n.param("Kd_z", Kd_z_, 100.0);
+
+            // Initialize desired position in z-direction (set to current position or a specific value)
+            desired_position_z_ = 0.3; // Example value, adjust as needed
+
+            // Initialize previous force error
+            F_error_x_prev_ = 0.0;
+
 
             return true;
         }
+
+        
+
+
 
         void starting(const ros::Time& /*time*/)
         {
@@ -182,6 +236,11 @@ namespace arm_controllers {
             x_d_x_prev_ = end_effector_pose.p.x();
             x_d_y_prev_ = end_effector_pose.p.y();
             x_d_z_prev_ = end_effector_pose.p.z();
+
+            control_stage_buffer_.initRT(0);
+
+            desired_position_set_ = false;
+            previous_control_mode_ = -1;
 
             ROS_INFO("Adaptive Impedance Controller Started");
         }
@@ -213,31 +272,123 @@ namespace arm_controllers {
             jac_solver_->JntToJac(q_, J_);
             Eigen::VectorXd xdot = J_.data * qdot_.data;
 
-            if (control_stage_ == 1)
+            
+            int control_mode = *(control_stage_buffer_.readFromRT());
+            //ROS_INFO("Control mode %d", control_mode);
+
+            //error
+            Eigen::VectorXd ex(3);
+            // Stage 1: Move to Position A
+
+            //force retrive fomr the sensors
+            //ROS_INFO_STREAM_THROTTLE(1.0, "Current force readings: Fx=" << f_cur_.force.x()
+                                     //<< ", Fy=" << f_cur_.force.y()
+                                     //<< ", Fz=" << f_cur_.force.z());
+            
+            KDL::Frame stored_end_effector_pose_;
+
+            if (control_mode != previous_control_mode_)
             {
-                // Stage 1: Move to Position A
+                desired_position_set_ = false;
+                previous_control_mode_ = control_mode;
+            }
+            
+            switch (control_mode)
+            {
+                case 0:
+                {
+                    // Compute position error
+                    ROS_INFO_STREAM("We are in 0");
+                    ex = desired_position_A_.head<3>() - current_position;
 
-                // Compute position error
-                Eigen::VectorXd ex(3);
-                ex = desired_position_A_.head<3>() - current_position;
+                    // Compute velocity error (desired velocity is zero)
+                    Eigen::VectorXd xdot_error = -xdot.head<3>();
 
-                // Compute velocity error (desired velocity is zero)
-                Eigen::VectorXd xdot_error = -xdot.head<3>();
+                    // Define task-space PID gains
+                    Eigen::VectorXd Kp(3), Kd(3);
+                    Kp << 1000, 1000, 1000; // Position gains
+                    Kd << 100, 100, 100;    // Velocity gains
 
-                // Define task-space PID gains
-                Eigen::VectorXd Kp(3), Kd(3);
-                Kp << 1000, 1000, 1000; // Position gains
-                Kd << 100, 100, 100;    // Velocity gains
+                    // Compute desired task-space force
+                    Eigen::VectorXd F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
 
-                // Compute desired task-space force
-                Eigen::VectorXd F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
+                    // Extend F_desired to 6D (force and torque)
+                    Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(6);
+                    F_ext.head<3>() = F_desired;
 
-                // Extend F_desired to 6D (force and torque)
-                Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(6);
-                F_ext.head<3>() = F_desired;
+                    // Compute joint torques
+                    tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
 
-                // Compute joint torques
-                tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
+                    break;
+                }
+                case 1:
+                {
+                    // Only set the desired position once
+                    if (!desired_position_set_)
+                    {
+                        desired_position_stored_ = *desired_position_buffer_.readFromRT();
+                        desired_position_set_ = true;
+                        ROS_INFO_STREAM("Stored desired position: [" 
+                                        << desired_position_stored_.transpose() << "]");
+                    }
+
+                    // Use the stored desired position
+                    Eigen::Vector3d desired_position = desired_position_stored_;
+
+                    // Compute position error
+                    Eigen::VectorXd ex = desired_position - current_position;
+
+                    // Compute velocity error (desired velocity is zero)
+                    Eigen::VectorXd xdot_error = -xdot.head<3>();
+
+                    // Define task-space PID gains
+                    Eigen::VectorXd Kp(3), Kd(3);
+                    Kp << 1000, 1000, 1000; // Position gains
+                    Kd << 100, 100, 100;    // Velocity gains
+
+                    // Compute desired task-space force
+                    Eigen::VectorXd F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
+
+                    // Extend F_desired to 6D (force and torque)
+                    Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(6);
+                    F_ext.head<3>() = F_desired;
+
+                    // Compute joint torques
+                    tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
+
+                    // Contact detection (optional)
+                    double force_magnitude = f_cur_.force.Norm();
+                    if (force_magnitude > contact_force_threshold_)
+                    {
+                        ROS_INFO("Contact detected, switching to admittance control.");
+                        contact_detected_ = true;
+
+                        // Set the equilibrium position to the current position
+                        x_eq_ = current_position;
+
+                        // Initialize desired position and velocity for admittance controller
+                        x_desired_ = current_position;
+                        x_dot_desired_ = Eigen::Vector3d::Zero();
+
+                        // Store the end-effector pose
+                        fk_solver_->JntToCart(q_, stored_end_effector_pose_);
+                        ROS_INFO_STREAM("Pose: [x: " << stored_end_effector_pose_.p.x()
+                                        << ", y: " << stored_end_effector_pose_.p.y()
+                                        << ", z: " << stored_end_effector_pose_.p.z() << "]");
+
+                        // Optionally switch to control mode 2
+                        // control_stage_buffer_.writeFromNonRT(2);
+                    }
+
+                    break;
+                }
+                
+                default:
+                {
+                    ROS_WARN("Invalid control mode selected: %d", control_mode);
+                    
+                    break;
+                }
             }
 
             // Apply torque commands
@@ -245,6 +396,14 @@ namespace arm_controllers {
             {
                 joints_[i].setCommand(tau_d_.data(i));
             }
+
+            //pub the error
+            geometry_msgs::Vector3Stamped error_msg;
+            error_msg.header.stamp = ros::Time::now();
+            error_msg.vector.x = ex(0);
+            error_msg.vector.y = ex(1);
+            error_msg.vector.z = ex(2);
+            pub_end_effector_error_.publish(error_msg);
 
             // Update time
             time_ += dt_;
@@ -303,13 +462,35 @@ namespace arm_controllers {
 
         void updateFTsensor(const geometry_msgs::WrenchStamped::ConstPtr &msg)
         {
-            // Store the current force-torque measurements
-            f_cur_[0] = msg->wrench.force.x;
-            f_cur_[1] = msg->wrench.force.y;
-            f_cur_[2] = first_order_lowpass_filter_z(msg->wrench.force.z);
-            f_cur_[3] = msg->wrench.torque.x;
-            f_cur_[4] = msg->wrench.torque.y;
-            f_cur_[5] = msg->wrench.torque.z;
+            // Apply low-pass filter to the z-component of the force
+            double filt_force_z = first_order_lowpass_filter_z(msg->wrench.force.z);
+
+            // Update the force-torque measurements
+            f_cur_.force = KDL::Vector(msg->wrench.force.x,
+                                    msg->wrench.force.y,
+                                    msg->wrench.force.z);
+            f_cur_.torque = KDL::Vector(msg->wrench.torque.x,
+                                        msg->wrench.torque.y,
+                                        msg->wrench.torque.z);
+        }
+
+
+
+        void controllerCommandCB(const std_msgs::Int32::ConstPtr &msg)
+        {
+            int new_stage = msg->data;
+            control_stage_buffer_.writeFromNonRT(new_stage);
+            ROS_INFO_STREAM("Received control stage command: " << new_stage);
+        }
+
+        // Callback for /transformed_centers
+        void transformedCentersCB(const geometry_msgs::PointStamped::ConstPtr &msg)
+        {
+            Eigen::Vector3d new_desired_position;
+            new_desired_position << msg->point.x, msg->point.y, msg->point.z;
+            desired_position_buffer_.writeFromNonRT(new_desired_position);
+            ROS_INFO_STREAM("Received new desired position: [" 
+                            << new_desired_position.transpose() << "]");
         }
 
         double first_order_lowpass_filter_z(double input)
@@ -369,6 +550,43 @@ namespace arm_controllers {
 
         // Jacobian and task-space variables
         KDL::Jacobian J_;
+
+        //Yolo center in robot frame
+        ros::Subscriber sub_transformed_centers_;
+        Eigen::Vector3d desired_position_;
+
+        //comand plan
+        ros::Subscriber sub_controller_command_;
+
+        realtime_tools::RealtimeBuffer<int> control_stage_buffer_;
+        realtime_tools::RealtimeBuffer<Eigen::Vector3d> desired_position_buffer_;
+
+        //equilibrium controller 
+        // Variables for contact detection and admittance control
+        bool contact_detected_;
+        double contact_force_threshold_;
+        Eigen::Vector3d x_eq_;              // Equilibrium position (desired position)
+        Eigen::Vector3d x_desired_;         // Desired position
+        Eigen::Vector3d x_dot_desired_;     // Desired velocity
+
+        // Admittance control parameters
+        double M_adm_, B_adm_, K_adm_;      // Admittance parameters: Mass, Damping, Stiffness
+
+        //error
+        ros::Publisher pub_end_effector_error_;
+        //force reading from sensor
+
+        //
+        double desired_force_x_;    // Desired force in the x-direction
+        double Kp_x_, Kd_x_;        // PID gains for x-force control
+        double desired_position_z_; // Desired position in z-direction
+        double Kp_z_, Kd_z_;        // PID gains for z-position control
+        double F_error_x_prev_;     // Previous force error in x-direction
+
+        //save tracked
+        bool desired_position_set_;
+        Eigen::Vector3d desired_position_stored_;
+        int previous_control_mode_;   
     };
 
 }

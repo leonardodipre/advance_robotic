@@ -118,5 +118,9 @@ only for one taerminal
     rosrun arm_controllers camera_transform.py
 
 
+Choosing the type:
+    rosrun arm_controllers plan_final.py
+
+
 
    

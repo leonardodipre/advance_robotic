@@ -524,7 +524,7 @@ namespace arm_controllers{
 				if (ex_.head(3).norm() < position_tolerance_)
 				{
 					// Switch to Stage 2
-					control_stage_ = 2;
+					control_stage_ = 3;
 
 					// Initialize previous desired positions for Stage 2
 					x_d_x_prev_ = current_position(0);
