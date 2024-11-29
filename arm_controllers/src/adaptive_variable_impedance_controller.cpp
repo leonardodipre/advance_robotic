@@ -242,6 +242,8 @@ namespace arm_controllers {
             desired_position_set_ = false;
             previous_control_mode_ = -1;
 
+            admittance_initialized_ = false;
+
             ROS_INFO("Adaptive Impedance Controller Started");
         }
 
@@ -377,11 +379,67 @@ namespace arm_controllers {
                                         << ", z: " << stored_end_effector_pose_.p.z() << "]");
 
                         // Optionally switch to control mode 2
-                        // control_stage_buffer_.writeFromNonRT(2);
+                        control_stage_buffer_.writeFromNonRT(2);
                     }
 
                     break;
                 }
+                case 2:
+                {
+                    // Initialize admittance variables once
+                    if (!admittance_initialized_)
+                    {
+                        x_desired_ = x_eq_; // Start from equilibrium position
+                        x_dot_desired_ = Eigen::Vector3d::Zero();
+                        admittance_initialized_ = true;
+                        ROS_INFO("Admittance control initialized.");
+                    }
+
+                    // Compute force error in x-direction
+                    double F_error_x = desired_force_x_ - f_cur_.force.x();
+
+                    // Compute desired acceleration using admittance model in x-direction
+                    double x_ddot_desired_x = (1.0 / M_adm_) * (F_error_x - B_adm_ * x_dot_desired_(0) - K_adm_ * (x_desired_(0) - x_eq_(0)));
+
+                    // Update desired velocity and position in x-direction
+                    x_dot_desired_(0) += x_ddot_desired_x * dt_;
+                    x_desired_(0) += x_dot_desired_(0) * dt_;
+
+                    // Keep y and z positions constant at equilibrium
+                    x_desired_(1) = x_eq_(1);
+                    x_dot_desired_(1) = 0.0;
+
+                    x_desired_(2) = x_eq_(2);
+                    x_dot_desired_(2) = 0.0;
+
+                    // Compute position and velocity errors
+                    ex = x_desired_ - current_position;
+                    Eigen::Vector3d xdot_error = x_dot_desired_ - xdot.head<3>();
+
+                    // Define task-space PID gains
+                    Eigen::Vector3d Kp(1000.0, 1000.0, 1000.0);
+                    Eigen::Vector3d Kd(100.0, 100.0, 100.0);
+
+                    // Compute desired task-space force
+                    Eigen::Vector3d F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
+
+                    // Do NOT set F_desired(2) = 0.0; allow it to be computed to maintain z-position
+
+                    // Extend F_desired to 6D (force and torque)
+                    Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(6);
+                    F_ext.head<3>() = F_desired;
+
+                    // Compute joint torques
+                    tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
+
+                    // Print the desired position
+                    ROS_INFO_STREAM_THROTTLE(1.0, "Desired Position: [" << x_desired_.transpose() << "]");
+
+                    break;
+                }
+
+
+
                 
                 default:
                 {
@@ -582,11 +640,16 @@ namespace arm_controllers {
         double desired_position_z_; // Desired position in z-direction
         double Kp_z_, Kd_z_;        // PID gains for z-position control
         double F_error_x_prev_;     // Previous force error in x-direction
-
         //save tracked
         bool desired_position_set_;
         Eigen::Vector3d desired_position_stored_;
-        int previous_control_mode_;   
+        int previous_control_mode_;  
+
+        //admitance 2.0
+        bool admittance_initialized_; 
+        double desired_force_z_; 
+       
+
     };
 
 }
