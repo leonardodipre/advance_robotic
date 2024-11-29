@@ -1,0 +1,43 @@
+ROS2 command
+
+DOCKER:
+	sudo docker run --rm -it          -v ~/Documenti/Es_3/Mecactronics:/root       -v /tmp/.X11-unix:/tmp/.X11-unix        -e DISPLAY=$DISPLAY             -e LIBGL_ALWAYS_SOFTWARE=1       --user root             ros_humble_con_pacchetti:latest
+	
+	
+---------------------------------	
+Esercizio 4:
+	
+	sudo docker run --rm -it          -v ~/Documenti/Mecactronics:/root       -v /tmp/.X11-unix:/tmp/.X11-unix        -e DISPLAY=$DISPLAY             -e LIBGL_ALWAYS_SOFTWARE=1       --user root             es_4:latest
+
+Es 4 with webcam
+
+sudo docker run --rm -it     --device=/dev/video0     -v ~/Documenti/Mecactronics:/root     -v /tmp/.X11-unix:/tmp/.X11-unix     -e DISPLAY=$DISPLAY     -e LIBGL_ALWAYS_SOFTWARE=1     --user root     es_4:latest
+
+
+-----------------------------------------
+
+Eserizio 6
+
+sudo docker run --rm -it \
+    -v ~/Documenti/Es_6_Robot_Manipulator:/root \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -e DISPLAY=$DISPLAY \
+    -e LIBGL_ALWAYS_SOFTWARE=1 \
+    --user root \
+    ex_6_robot_manipulator:latest
+	    
+	PUSHARE PACHETTI
+	
+		docker commit 42c1e700c193 ros:humble-ros-core
+		
+		docker commit 9ef08244a6cd ros_humble_con_pacchetti
+		
+		Predo il ID di quello che mi serve + nuovo nome commit
+
+
+
+Programm
+
+docker commit 3c77f42a4143 ros_humble_con_pacchetti:latest
+
+

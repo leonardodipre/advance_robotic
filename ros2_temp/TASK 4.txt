@@ -1,0 +1,15 @@
+TASK 4
+
+Walking man:
+	ros2 launch walking_actor cam_world.launch.py
+	
+	python 
+	
+Conda env
+	 conda activate tracker
+	 
+	 
+Tracker immagini
+	python main.py
+	
+	python video.py

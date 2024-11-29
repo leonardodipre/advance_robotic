@@ -1,0 +1,54 @@
+TASK 1
+	ros2 run turtlesim turtlesim_node
+	
+	 ros2 run turtlesim turtle_teleop_key
+
+	PATH 
+	
+	Circle:
+	ros2 topic pub /turtle1/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 2.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 1.0}}"
+
+	Forward:
+	ros2 topic pub /turtle1/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 2.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
+	
+	Turn 90
+	ros2 topic pub /turtle1/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 1.57}}" --once
+
+
+	Concat diff motion
+	ros2 run meccatronics_py turtle_square_path
+	
+	
+	
+3D Robot:
+	export TURTLEBOT3_MODEL=burger
+    
+        ros2 launch turtlebot3_gazebo empty_world.launch.py
+
+	ros2 run meccatronics_py ros2_goforward
+	
+	
+	Move to [x, y]
+            ros2 run meccatronics_py es3_task_1 --ros-args -p goal_x:=1.0 -p goal_y:=-2.0
+
+        Move to [x, y , theta]
+            ros2 run meccatronics_py es3_task_1 --ros-args -p goal_x:=1.0 -p goal_y:=2.0 -p goal_theta:=1.57
+
+        Path hard-coded
+            ros2 run meccatronics_py follow_path_pid -ros-args --params-file /path/square_path.yaml
+        
+        Path following cirle
+            ros2 run meccatronics_py follow_path_function
+            
+         Plot jugger:
+         
+         apt install ros-humble-plotjuggler-ros
+         ros2 run plotjuggler plotjuggler
+         
+ROS bag
+         
+         ros2 bag record -o burger /cmd_vel /odom /tf /tf_static
+	
+	ros2 bag info burger
+	
+	ros2 bag play burger
