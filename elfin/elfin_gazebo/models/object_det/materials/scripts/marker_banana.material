@@ -1,0 +1,15 @@
+material Marker_banana
+{
+  technique
+  {
+    pass
+    {
+      texture_unit
+      {
+        texture truck.png
+        tex_address_mode wrap
+        filtering anisotropic
+      }
+    }
+  }
+}

@@ -21,8 +21,16 @@
   <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
         output="screen" ns="/elfin" args="joint_state_controller adaptive_impedance_controller" />
 
-  <!-- Spawn Marker -->
- <node name="spawn_marker" pkg="gazebo_ros" type="spawn_model" output="screen"
-    args="-sdf -model aruco_marker -file /root/src/elfin/elfin_gazebo/models/object_det/model.sdf -x 0.65 -y 0 -z 0" />
+  <!-- Spawn Aruco Marker -->
+  <node name="spawn_marker" pkg="gazebo_ros" type="spawn_model" output="screen"
+     args="-sdf -model aruco_marker -file $(find elfin_gazebo)/models/object_det/model.sdf -x 0.65 -y 0.15 -z 0 -R 0 -P 0 -Y 0.0" />
+
+  <!-- Spawn Red Car -->
+  <node name="spawn_red_car" pkg="gazebo_ros" type="spawn_model" output="screen"
+     args="-sdf -model red_car -file $(find elfin_gazebo)/models/object_det/model_car.sdf -x 0.65 -y -0.15 -z 0 -R 0 -P 0 -Y 0.0" />
+
+  <!-- Spawn Banana Marker -->
+  <node name="spawn_banana_marker" pkg="gazebo_ros" type="spawn_model" output="screen"
+     args="-sdf -model banana_marker -file $(find elfin_gazebo)/models/object_det/banana_model.sdf -x 0.65 -y 0.0  -z 0 -R 0 -P 0 -Y 0.0" />
 
 </launch>

@@ -190,8 +190,8 @@ namespace arm_controllers {
 
             // Initialize admittance control parameters
             M_adm_ = 1.0;    // Mass (kg)
-            B_adm_ = 20.0;   // Damping (N·s/m)
-            K_adm_ = 100.0;  // Stiffness (N/m)
+            B_adm_ = 50.0;   // Damping (N·s/m)
+            K_adm_ = 500.0;  // Stiffness (N/m)
 
             x_desired_ = Eigen::Vector3d::Zero();
             x_dot_desired_ = Eigen::Vector3d::Zero();
@@ -201,7 +201,8 @@ namespace arm_controllers {
 
             // Initialize the desired force value in the x-direction
            
-            desired_force_x_ = 1.0;
+            desired_force_x_ = 5.0;
+            push_force_x = 150.0;
             // Load PID gains for x-direction force control
             
             Kp_x_ =  100.0;
@@ -437,6 +438,60 @@ namespace arm_controllers {
 
                     break;
                 }
+                case 3:
+                {
+                    // Initialize admittance variables once
+                    if (!admittance_initialized_)
+                    {
+                        x_desired_ = x_eq_; // Start from equilibrium position
+                        x_dot_desired_ = Eigen::Vector3d::Zero();
+                        admittance_initialized_ = true;
+                        ROS_INFO("Admittance control for pushing initialized.");
+                    }
+
+                    // Set the desired pushing force
+                    desired_force_x_ = push_force_x;
+
+                    // Compute force error in x-direction
+                    double F_error_x = desired_force_x_ - f_cur_.force.x();
+
+                    // Compute desired acceleration using admittance model in x-direction
+                    double x_ddot_desired_x = (1.0 / M_adm_) * (F_error_x - B_adm_ * x_dot_desired_(0) - K_adm_ * (x_desired_(0) - x_eq_(0)));
+
+                    // Update desired velocity and position in x-direction
+                    x_dot_desired_(0) += x_ddot_desired_x * dt_;
+                    x_desired_(0) += x_dot_desired_(0) * dt_;
+
+                    // Keep y and z positions constant at equilibrium or adjust as needed
+                    x_desired_(1) = x_eq_(1);
+                    x_dot_desired_(1) = 0.0;
+                    x_desired_(2) = x_eq_(2);
+                    x_dot_desired_(2) = 0.0;
+
+                    // Compute position and velocity errors
+                    ex = x_desired_ - current_position;
+                    Eigen::Vector3d xdot_error = x_dot_desired_ - xdot.head<3>();
+
+                    // Define task-space PID gains
+                    Eigen::Vector3d Kp(1000.0, 1000.0, 1000.0);
+                    Eigen::Vector3d Kd(100.0, 100.0, 100.0);
+
+                    // Compute desired task-space force
+                    Eigen::Vector3d F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
+
+                    // Extend F_desired to 6D (force and torque)
+                    Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(6);
+                    F_ext.head<3>() = F_desired;
+
+                    // Compute joint torques
+                    tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
+
+                    // Optional: Print or log the desired position
+                    ROS_INFO_STREAM_THROTTLE(1.0, "Desired Position during pushing: [" << x_desired_.transpose() << "]");
+
+                    break;
+                }
+
 
 
 
@@ -521,10 +576,10 @@ namespace arm_controllers {
         void updateFTsensor(const geometry_msgs::WrenchStamped::ConstPtr &msg)
         {
             // Apply low-pass filter to the z-component of the force
-            double filt_force_z = first_order_lowpass_filter_z(msg->wrench.force.z);
+            double filt_force_x = first_order_lowpass_filter_z(msg->wrench.force.x);
 
             // Update the force-torque measurements
-            f_cur_.force = KDL::Vector(msg->wrench.force.x,
+            f_cur_.force = KDL::Vector(filt_force_x,
                                     msg->wrench.force.y,
                                     msg->wrench.force.z);
             f_cur_.torque = KDL::Vector(msg->wrench.torque.x,
@@ -648,7 +703,9 @@ namespace arm_controllers {
         //admitance 2.0
         bool admittance_initialized_; 
         double desired_force_z_; 
-       
+
+        //push force
+       double push_force_x; 
 
     };
 
