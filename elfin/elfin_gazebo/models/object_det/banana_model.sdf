@@ -48,7 +48,7 @@
           <ambient>1.0 1.0 1.0 1</ambient>
           <diffuse>1.0 1.0 1.0 1</diffuse>
           <texture>
-            <diffuse>model://object_det/materials/textures/banana.png</diffuse>
+            <diffuse>model://object_det/materials/textures/truck.png</diffuse>
             <wrap_s>CLAMP</wrap_s>
             <wrap_t>CLAMP</wrap_t>
           </texture>

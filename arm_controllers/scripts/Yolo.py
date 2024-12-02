@@ -1,16 +1,20 @@
 #!/usr/bin/env python
 import rospy
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image as ROSImage, CameraInfo
+from std_msgs.msg import String
 from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import torch
 import numpy as np
+import open_clip
+from PIL import Image as PILImage
+import threading
 
-class YoloDepthDetector:
+class YoloClipDepthDetector:
     def __init__(self):
         # Initialize ROS node
-        rospy.init_node('yolo_depth_detector', anonymous=True)
+        rospy.init_node('yolo_clip_depth_detector', anonymous=True)
 
         # Parameters
         self.bridge = CvBridge()
@@ -21,15 +25,32 @@ class YoloDepthDetector:
         self.annotated_output_topic = rospy.get_param('~annotated_output_topic', '/detection/image_with_boxes')
         self.position_output_topic = rospy.get_param('~position_output_topic', '/detection/positions')
         self.centers_output_topic = rospy.get_param('~centers_output_topic', '/detection/centers')
+        self.prompt_topic = rospy.get_param('~prompt_topic', '/detection/prompt')
 
-        # Load YOLO model
+        # Load YOLOv5 model
         rospy.loginfo("Loading YOLOv5 model...")
         self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
         self.model.conf = 0.1  # Confidence threshold
         rospy.loginfo("YOLOv5 model loaded.")
 
+        # Load CLIP model
+        rospy.loginfo("Loading CLIP model...")
+        self.clip_model_name = 'ViT-L-14'  # You can choose a more powerful model
+        self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
+            self.clip_model_name, pretrained='openai')
+        self.clip_model.eval()
+        self.clip_tokenizer = open_clip.get_tokenizer(self.clip_model_name)
+        rospy.loginfo(f"CLIP model '{self.clip_model_name}' loaded.")
+
+        # Initialize text prompt variables
+        self.text_phrase = None  # Will be set when prompt is received
+        self.text_tokens = None
+        self.text_features = None
+        self.prompt_received = False
+        self.prompt_lock = threading.Lock()  # To ensure thread safety
+
         # Publishers
-        self.annotated_image_pub = rospy.Publisher(self.annotated_output_topic, Image, queue_size=1)
+        self.annotated_image_pub = rospy.Publisher(self.annotated_output_topic, ROSImage, queue_size=1)
         self.position_pub = rospy.Publisher(self.position_output_topic, PointStamped, queue_size=10)
         self.centers_pub = rospy.Publisher(self.centers_output_topic, PointStamped, queue_size=10)
 
@@ -41,19 +62,32 @@ class YoloDepthDetector:
         self.depth_image = None
 
         # Subscribers
-        rospy.Subscriber(self.color_image_topic, Image, self.image_callback)
+        rospy.Subscriber(self.color_image_topic, ROSImage, self.image_callback)
         rospy.Subscriber(self.color_info_topic, CameraInfo, self.color_info_callback)
-        rospy.Subscriber(self.depth_image_topic, Image, self.depth_image_callback)
+        rospy.Subscriber(self.depth_image_topic, ROSImage, self.depth_image_callback)
         rospy.Subscriber(self.depth_info_topic, CameraInfo, self.depth_info_callback)
+        rospy.Subscriber(self.prompt_topic, String, self.prompt_callback)
 
-        rospy.loginfo("YOLO Depth Detector initialized.")
+        rospy.loginfo("YOLO CLIP Depth Detector initialized.")
         rospy.loginfo("Subscribed to color image: %s", self.color_image_topic)
         rospy.loginfo("Subscribed to depth image: %s", self.depth_image_topic)
         rospy.loginfo("Subscribed to color camera info: %s", self.color_info_topic)
         rospy.loginfo("Subscribed to depth camera info: %s", self.depth_info_topic)
+        rospy.loginfo("Subscribed to prompt topic: %s", self.prompt_topic)
         rospy.loginfo("Publishing annotated images to %s", self.annotated_output_topic)
         rospy.loginfo("Publishing 3D positions to %s", self.position_output_topic)
         rospy.loginfo("Publishing center points to %s", self.centers_output_topic)
+
+    def prompt_callback(self, msg):
+        # Update the text prompt and compute text features
+        with self.prompt_lock:
+            self.text_phrase = msg.data.strip()
+            rospy.loginfo(f"Received new text prompt: '{self.text_phrase}'")
+            self.text_tokens = self.clip_tokenizer([self.text_phrase])
+            with torch.no_grad():
+                self.text_features = self.clip_model.encode_text(self.text_tokens).float()
+                self.text_features /= self.text_features.norm(dim=-1, keepdim=True)
+            self.prompt_received = True  # Indicate that prompt has been received
 
     def color_info_callback(self, msg):
         if self.color_K is None:
@@ -80,8 +114,20 @@ class YoloDepthDetector:
             rospy.logerr("Error converting depth image: %s", e)
 
     def image_callback(self, image_msg):
+        # Wait until the prompt, camera parameters, and depth image are received
+        if not self.prompt_received:
+            rospy.logwarn("Waiting for text prompt...")
+            return
         if self.color_K is None or self.depth_K is None or self.depth_image is None:
             rospy.logwarn("Waiting for camera parameters and depth image...")
+            return
+
+        # Acquire lock to safely access text features
+        with self.prompt_lock:
+            text_features = self.text_features
+
+        if text_features is None:
+            rospy.logwarn("Text features not computed yet.")
             return
 
         try:
@@ -104,6 +150,10 @@ class YoloDepthDetector:
             img_height, img_width = cv_image.shape[:2]
             depth_height, depth_width = self.depth_image.shape[:2]
 
+            # Lists to store similarities and corresponding detection data
+            similarities = []
+            detection_data = []
+
             # Iterate through detections and process bounding boxes
             for idx, (*box_rotated, conf, cls) in enumerate(detections):
                 x1_rot, y1_rot, x2_rot, y2_rot = map(int, box_rotated)
@@ -122,42 +172,93 @@ class YoloDepthDetector:
 
                 label = f"{self.model.names[int(cls)]}: {conf:.2f}"
 
-                # Draw bounding box on the image
+                # Crop the image to the bounding box for CLIP
+                cropped_image = annotated_image[y1:y2, x1:x2]
+                if cropped_image.size == 0:
+                    rospy.logwarn("Cropped image is empty, skipping...")
+                    continue
+
+                # Preprocess the cropped image for CLIP
+                pil_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)
+                pil_image = PILImage.fromarray(pil_image)
+                image_input = self.clip_preprocess(pil_image).unsqueeze(0)  # Add batch dimension
+
+                # Encode image using CLIP
+                with torch.no_grad():
+                    image_features = self.clip_model.encode_image(image_input).float()
+                    image_features /= image_features.norm(dim=-1, keepdim=True)
+
+                    # Compute cosine similarity
+                    similarity = (text_features @ image_features.T).cpu().item()
+
+                # Store similarity and associated data
+                similarities.append(similarity)
+                detection_data.append({
+                    'x1': x1,
+                    'y1': y1,
+                    'x2': x2,
+                    'y2': y2,
+                    'label': label,
+                    'similarity': similarity,
+                    'cls': cls,
+                    'conf': conf,
+                    'u_center': int((x1 + x2) / 2),
+                    'v_center': int((y1 + y2) / 2)
+                })
+
+                # Draw bounding box on the image with similarity score for all detections
                 cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(annotated_image, label, (x1, max(y1 - 10, 0)),
+                label_with_similarity = f"{label}, Sim: {similarity:.2f}"
+                cv2.putText(annotated_image, label_with_similarity, (x1, max(y1 - 10, 0)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-                # Compute center of bounding box in image coordinates
-                u_center = int((x1 + x2) / 2)
-                v_center = int((y1 + y2) / 2)
-
                 # Draw the center point on the image
-                cv2.circle(annotated_image, (u_center, v_center), 5, (0, 0, 255), -1)
+                cv2.circle(annotated_image, (int((x1 + x2) / 2), int((y1 + y2) / 2)), 5, (0, 0, 255), -1)
 
-                # Log the bounding box details
-                rospy.loginfo(f"Detected {label} with BBox [x1: {x1}, y1: {y1}, x2: {x2}, y2: {y2}]")
-                rospy.loginfo(f"Center of {label}: (u: {u_center}, v: {v_center})")
+            if not detection_data:
+                rospy.loginfo("No valid detections to process.")
+                return
 
-                # Publish the center point in pixel coordinates
-                center_msg = PointStamped()
-                center_msg.header = image_msg.header  # Use the same header as the image
-                center_msg.point.x = u_center
-                center_msg.point.y = v_center
-                center_msg.point.z = 0  # Depth will be obtained from depth image
-                self.centers_pub.publish(center_msg)
+            # Find the detection with the highest similarity
+            max_index = np.argmax(similarities)
+            best_detection = detection_data[max_index]
 
-                # Map pixel coordinates from color image to depth image
-                u_depth, v_depth = self.map_color_to_depth(u_center, v_center, img_width, img_height, depth_width, depth_height)
+            # Extract data for the best detection
+            x1 = best_detection['x1']
+            y1 = best_detection['y1']
+            x2 = best_detection['x2']
+            y2 = best_detection['y2']
+            label = best_detection['label']
+            similarity = best_detection['similarity']
+            cls = best_detection['cls']
+            conf = best_detection['conf']
+            u_center = best_detection['u_center']
+            v_center = best_detection['v_center']
 
-                # Verify that (u_depth, v_depth) are within the depth image
-                if 0 <= u_depth < depth_width and 0 <= v_depth < depth_height:
-                    # Get the depth z from the depth image
-                    z = self.depth_image[v_depth, u_depth]
+            # Log the best detection details
+            rospy.loginfo(f"Best Detection: {label} with BBox [x1: {x1}, y1: {y1}, x2: {x2}, y2: {y2}]")
+            rospy.loginfo(f"Center of {label}: (u: {u_center}, v: {v_center})")
+            rospy.loginfo(f"Highest Cosine similarity with '{self.text_phrase}': {similarity:.2f}")
 
-                    if np.isnan(z) or z <= 0:
-                        rospy.logwarn(f"Invalid depth at pixel ({u_depth}, {v_depth}): z={z}")
-                        continue
+            # Publish the center point in pixel coordinates
+            center_msg = PointStamped()
+            center_msg.header = image_msg.header  # Use the same header as the image
+            center_msg.point.x = u_center
+            center_msg.point.y = v_center
+            center_msg.point.z = 0  # Depth will be obtained from depth image
+            self.centers_pub.publish(center_msg)
 
+            # Map pixel coordinates from color image to depth image
+            u_depth, v_depth = self.map_color_to_depth(u_center, v_center, img_width, img_height, depth_width, depth_height)
+
+            # Verify that (u_depth, v_depth) are within the depth image
+            if 0 <= u_depth < depth_width and 0 <= v_depth < depth_height:
+                # Get the depth z from the depth image
+                z = self.depth_image[v_depth, u_depth]
+
+                if np.isnan(z) or z <= 0:
+                    rospy.logwarn(f"Invalid depth at pixel ({u_depth}, {v_depth}): z={z}")
+                else:
                     rospy.loginfo(f"Depth at pixel ({u_depth}, {v_depth}): z={z:.3f} meters")
 
                     # Compute X, Y, Z in camera frame using depth camera intrinsics
@@ -175,9 +276,8 @@ class YoloDepthDetector:
                     # Publish the 3D point
                     self.position_pub.publish(point_3d)
                     rospy.loginfo(f"Published 3D position: X={X:.3f}, Y={Y:.3f}, Z={Z:.3f} meters")
-                else:
-                    rospy.logwarn(f"Depth pixel out of bounds: u={u_depth}, v={v_depth}")
-                    continue
+            else:
+                rospy.logwarn(f"Depth pixel out of bounds: u={u_depth}, v={v_depth}")
 
             # Convert the annotated image back to ROS Image message
             try:
@@ -205,7 +305,7 @@ class YoloDepthDetector:
 
 if __name__ == '__main__':
     try:
-        YoloDepthDetector()
+        YoloClipDepthDetector()
         rospy.spin()
     except rospy.ROSInterruptException:
         pass
