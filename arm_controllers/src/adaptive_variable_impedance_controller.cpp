@@ -21,8 +21,8 @@
 
 #include <Eigen/Dense>
 #include "std_msgs/Int32.h"
-
-
+#include <geometry_msgs/Vector3Stamped.h>
+#include <std_msgs/Float64.h>
 
 #define PI 3.14159265358979323846
 
@@ -35,8 +35,6 @@ struct Commands
     Eigen::VectorXd xd_dot; // Desired task-space velocity (6 elements)
     Commands() {}
 };
-
-
 
 namespace arm_controllers {
 
@@ -158,12 +156,7 @@ namespace arm_controllers {
             // Initialize desired position
             desired_position_A_ = Eigen::VectorXd::Zero(3);
             desired_position_A_ << 0.4, 0.0, 0.3;
-             
             
-           
-
-            
-                
 
             // Subscribe to topics
             sub_q_cmd_ = n.subscribe("command", 1, &AdaptiveImpedanceController::commandCB, this);
@@ -172,16 +165,18 @@ namespace arm_controllers {
 
             // Yolo pose
             sub_transformed_centers_ = n.subscribe("/transformed_centers", 1, &AdaptiveImpedanceController::transformedCentersCB, this);
-            //comand 
+            //command 
             sub_controller_command_ = n.subscribe("/controller_command", 1, &AdaptiveImpedanceController::controllerCommandCB, this);
             control_stage_buffer_.writeFromNonRT(0);
 
             //error
-            pub_end_effector_error_ = n.advertise<geometry_msgs::Vector3Stamped>("end_effector_error", 10);
+            pub_end_effector_error_ = n.advertise<geometry_msgs::Vector3Stamped>("/end_effector_error", 10);
 
+            error_traj_q =  n.advertise<std_msgs::Float64MultiArray>("/erro_traj_pose", 1000);
 
-            // Initialize control stage
+            error_traj_qd =  n.advertise<std_msgs::Float64MultiArray>("/erro_traj_velocity", 1000);
             
+            // Initialize control stage
             control_stage_ = 1;
 
             //equilibrium
@@ -197,14 +192,10 @@ namespace arm_controllers {
             x_dot_desired_ = Eigen::Vector3d::Zero();
             x_eq_ = Eigen::Vector3d::Zero();
 
-
-
             // Initialize the desired force value in the x-direction
-           
             desired_force_x_ = 5.0;
             push_force_x = 150.0;
             // Load PID gains for x-direction force control
-            
             Kp_x_ =  100.0;
             Kd_x_= 10.0;
             // Load PID gains for z-direction position control
@@ -217,13 +208,60 @@ namespace arm_controllers {
             // Initialize previous force error
             F_error_x_prev_ = 0.0;
 
+            // Initialize publishers for telemetry data
+            pub_control_stage_ = n.advertise<std_msgs::Int32>("/control_stage", 10);
+            pub_force_error_ = n.advertise<std_msgs::Float64>("/force_error", 10);
+            pub_end_effector_position_ = n.advertise<geometry_msgs::Vector3Stamped>("/end_effector_position", 10);
+            pub_desired_end_effector_position_ = n.advertise<geometry_msgs::Vector3Stamped>("/desired_end_effector_position", 10);
+            pub_joint_positions_ = n.advertise<std_msgs::Float64MultiArray>("/joint_positions", 10);
+            pub_desired_joint_positions_ = n.advertise<std_msgs::Float64MultiArray>("/desired_joint_positions", 10);
+            pub_force_sensor_readings_ = n.advertise<geometry_msgs::WrenchStamped>("/force_sensor_readings", 10);
+            pub_computed_torques_ = n.advertise<std_msgs::Float64MultiArray>("/computed_torques", 10);
+            pub_joint_velocities_ = n.advertise<std_msgs::Float64MultiArray>("/joint_velocities", 10);
+            pub_desired_joint_velocities_ = n.advertise<std_msgs::Float64MultiArray>("/desired_joint_velocities", 10);
+            pub_end_effector_velocity_ = n.advertise<geometry_msgs::Vector3Stamped>("/end_effector_velocity", 10);
+            pub_desired_end_effector_velocity_ = n.advertise<geometry_msgs::Vector3Stamped>("/desired_end_effector_velocity", 10);
+
+            // Initialize additional publishers for force command and error
+            pub_force_command_ = n.advertise<geometry_msgs::WrenchStamped>("/force_command", 10);
+            pub_force_control_error_ = n.advertise<geometry_msgs::Vector3Stamped>("/force_control_error", 10);
+
+            // Initialize variables for publishing
+            q_desired_.resize(n_joints_);
+            qd_desired_.resize(n_joints_);
+            xdot_.resize(6);
+            x_dot_desired_vec6_.resize(6); // Renamed variable to avoid conflict
 
             return true;
         }
 
-        
+        double trajectory_generator_pos(double dStart, double dEnd, double dDuration, double t)
+        {
+            double dA0 = dStart;
+            double dA3 = (20.0 * dEnd - 20.0 * dStart) / (2.0 * dDuration * dDuration * dDuration);
+            double dA4 = (30.0 * dStart - 30.0 * dEnd) / (2.0 * dDuration * dDuration * dDuration * dDuration);
+            double dA5 = (12.0 * dEnd - 12.0 * dStart) / (2.0 * dDuration * dDuration * dDuration * dDuration * dDuration);
 
+            return dA0 + dA3 * t * t * t + dA4 * t * t * t * t + dA5 * t * t * t * t * t;
+        }
 
+        double trajectory_generator_vel(double dStart, double dEnd, double dDuration, double t)
+        {
+            double dA3 = (20.0 * dEnd - 20.0 * dStart) / (2.0 * dDuration * dDuration * dDuration);
+            double dA4 = (30.0 * dStart - 30.0 * dEnd) / (2.0 * dDuration * dDuration * dDuration * dDuration);
+            double dA5 = (12.0 * dEnd - 12.0 * dStart) / (2.0 * dDuration * dDuration * dDuration * dDuration * dDuration);
+
+            return 3.0 * dA3 * t * t + 4.0 * dA4 * t * t * t + 5.0 * dA5 * t * t * t * t;
+        }
+
+        double trajectory_generator_acc(double dStart, double dEnd, double dDuration, double t)
+        {
+            double dA3 = (20.0 * dEnd - 20.0 * dStart) / (2.0 * dDuration * dDuration * dDuration);
+            double dA4 = (30.0 * dStart - 30.0 * dEnd) / (2.0 * dDuration * dDuration * dDuration * dDuration);
+            double dA5 = (12.0 * dEnd - 12.0 * dStart) / (2.0 * dDuration * dDuration * dDuration * dDuration * dDuration);
+
+            return 6.0 * dA3 * t + 12.0 * dA4 * t * t + 20.0 * dA5 * t * t * t;
+        }
 
         void starting(const ros::Time& /*time*/)
         {
@@ -244,6 +282,12 @@ namespace arm_controllers {
             previous_control_mode_ = -1;
 
             admittance_initialized_ = false;
+
+            trajectory_initialized_ = false; // Initialize trajectory flag
+
+            // Initialize q_desired_ and qd_desired_
+            q_desired_.resize(n_joints_);
+            qd_desired_.resize(n_joints_);
 
             ROS_INFO("Adaptive Impedance Controller Started");
         }
@@ -275,19 +319,25 @@ namespace arm_controllers {
             jac_solver_->JntToJac(q_, J_);
             Eigen::VectorXd xdot = J_.data * qdot_.data;
 
-            
+            // Store end-effector velocity
+            xdot_ = xdot; // xdot_ is Eigen::VectorXd of size n_joints_
+
             int control_mode = *(control_stage_buffer_.readFromRT());
             //ROS_INFO("Control mode %d", control_mode);
 
-            //error
+            // Error
             Eigen::VectorXd ex(3);
-            // Stage 1: Move to Position A
 
-            //force retrive fomr the sensors
-            //ROS_INFO_STREAM_THROTTLE(1.0, "Current force readings: Fx=" << f_cur_.force.x()
-                                     //<< ", Fy=" << f_cur_.force.y()
-                                     //<< ", Fz=" << f_cur_.force.z());
-            
+            // Variables for publishing
+            Eigen::Vector3d desired_position_to_publish = current_position; // Initialize with current position
+            q_desired_.data = q_.data; // Initialize desired joint positions
+            qd_desired_.data = qdot_.data; // Initialize desired joint velocities
+            x_dot_desired_vec6_.setZero(); // Initialize desired end-effector velocity for publishing
+            F_error_x_ = 0.0; // Initialize force error
+
+            // Initialize force command to publish
+            Eigen::Vector3d force_command_to_publish = Eigen::Vector3d::Zero();
+
             KDL::Frame stored_end_effector_pose_;
 
             if (control_mode != previous_control_mode_)
@@ -295,13 +345,12 @@ namespace arm_controllers {
                 desired_position_set_ = false;
                 previous_control_mode_ = control_mode;
             }
-            
+
             switch (control_mode)
             {
                 case 0:
                 {
                     // Compute position error
-                    ROS_INFO_STREAM("We are in 0");
                     ex = desired_position_A_.head<3>() - current_position;
 
                     // Compute velocity error (desired velocity is zero)
@@ -322,6 +371,11 @@ namespace arm_controllers {
                     // Compute joint torques
                     tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
 
+                    desired_position_to_publish = desired_position_A_.head<3>(); // Update desired position for publishing
+
+                    // Assign force command to publish
+                    force_command_to_publish = F_desired.head<3>();
+
                     break;
                 }
                 case 1:
@@ -339,7 +393,7 @@ namespace arm_controllers {
                     Eigen::Vector3d desired_position = desired_position_stored_;
 
                     // Compute position error
-                    Eigen::VectorXd ex = desired_position - current_position;
+                    ex = desired_position - current_position;
 
                     // Compute velocity error (desired velocity is zero)
                     Eigen::VectorXd xdot_error = -xdot.head<3>();
@@ -350,7 +404,7 @@ namespace arm_controllers {
                     Kd << 100, 100, 100;    // Velocity gains
 
                     // Compute desired task-space force
-                    Eigen::VectorXd F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
+                    Eigen::Vector3d F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
 
                     // Extend F_desired to 6D (force and torque)
                     Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(6);
@@ -358,6 +412,11 @@ namespace arm_controllers {
 
                     // Compute joint torques
                     tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
+
+                    desired_position_to_publish = desired_position; // Update desired position for publishing
+
+                    // Assign force command to publish
+                    force_command_to_publish = F_desired;
 
                     // Contact detection (optional)
                     double force_magnitude = f_cur_.force.Norm();
@@ -387,54 +446,36 @@ namespace arm_controllers {
                 }
                 case 2:
                 {
-                    // Initialize admittance variables once
-                    if (!admittance_initialized_)
-                    {
-                        x_desired_ = x_eq_; // Start from equilibrium position
-                        x_dot_desired_ = Eigen::Vector3d::Zero();
-                        admittance_initialized_ = true;
-                        ROS_INFO("Admittance control initialized.");
-                    }
-
-                    // Compute force error in x-direction
-                    double F_error_x = desired_force_x_ - f_cur_.force.x();
-
-                    // Compute desired acceleration using admittance model in x-direction
-                    double x_ddot_desired_x = (1.0 / M_adm_) * (F_error_x - B_adm_ * x_dot_desired_(0) - K_adm_ * (x_desired_(0) - x_eq_(0)));
-
-                    // Update desired velocity and position in x-direction
-                    x_dot_desired_(0) += x_ddot_desired_x * dt_;
-                    x_desired_(0) += x_dot_desired_(0) * dt_;
-
-                    // Keep y and z positions constant at equilibrium
-                    x_desired_(1) = x_eq_(1);
-                    x_dot_desired_(1) = 0.0;
-
-                    x_desired_(2) = x_eq_(2);
-                    x_dot_desired_(2) = 0.0;
+                    // Define impedance parameters
+                    Eigen::Vector3d K_impedance(500.0, 500.0, 500.0); // Stiffness in N/m
+                    Eigen::Vector3d B_impedance(50.0, 50.0, 50.0);    // Damping in N·s/m
 
                     // Compute position and velocity errors
-                    ex = x_desired_ - current_position;
-                    Eigen::Vector3d xdot_error = x_dot_desired_ - xdot.head<3>();
+                    Eigen::Vector3d x_error = current_position - x_eq_; // x_eq_ is the equilibrium position
+                    Eigen::Vector3d xdot_error = xdot.head(3);          // Desired velocity is zero
 
-                    // Define task-space PID gains
-                    Eigen::Vector3d Kp(1000.0, 1000.0, 1000.0);
-                    Eigen::Vector3d Kd(100.0, 100.0, 100.0);
+                    // Convert f_cur_.force (KDL::Vector) to Eigen::Vector3d
+                    Eigen::Vector3d f_cur_force;
+                    f_cur_force << f_cur_.force.x(), f_cur_.force.y(), f_cur_.force.z();
 
-                    // Compute desired task-space force
-                    Eigen::Vector3d F_desired = Kp.cwiseProduct(ex) + Kd.cwiseProduct(xdot_error);
+                    // Compute commanded force using the impedance control law
+                    Eigen::Vector3d F_cmd = -K_impedance.cwiseProduct(x_error)
+                                            - B_impedance.cwiseProduct(xdot_error)
+                                            - f_cur_force;
 
-                    // Do NOT set F_desired(2) = 0.0; allow it to be computed to maintain z-position
-
-                    // Extend F_desired to 6D (force and torque)
+                    // Extend F_cmd to 6D
                     Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(6);
-                    F_ext.head<3>() = F_desired;
+                    F_ext.head(3) = F_cmd;
 
                     // Compute joint torques
                     tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
 
-                    // Print the desired position
-                    ROS_INFO_STREAM_THROTTLE(1.0, "Desired Position: [" << x_desired_.transpose() << "]");
+                    // Update variables for publishing
+                    desired_position_to_publish = x_eq_;
+                    x_dot_desired_vec6_.head(3) = Eigen::Vector3d::Zero();
+
+                    // Assign force command to publish
+                    force_command_to_publish = F_cmd;
 
                     break;
                 }
@@ -453,10 +494,10 @@ namespace arm_controllers {
                     desired_force_x_ = push_force_x;
 
                     // Compute force error in x-direction
-                    double F_error_x = desired_force_x_ - f_cur_.force.x();
+                    F_error_x_ = desired_force_x_ - f_cur_.force.x();
 
                     // Compute desired acceleration using admittance model in x-direction
-                    double x_ddot_desired_x = (1.0 / M_adm_) * (F_error_x - B_adm_ * x_dot_desired_(0) - K_adm_ * (x_desired_(0) - x_eq_(0)));
+                    double x_ddot_desired_x = (1.0 / M_adm_) * (F_error_x_ - B_adm_ * x_dot_desired_(0) - K_adm_ * (x_desired_(0) - x_eq_(0)));
 
                     // Update desired velocity and position in x-direction
                     x_dot_desired_(0) += x_ddot_desired_x * dt_;
@@ -486,20 +527,129 @@ namespace arm_controllers {
                     // Compute joint torques
                     tau_d_.data = J_.data.transpose() * F_ext + C_.data + G_.data;
 
-                    // Optional: Print or log the desired position
-                    ROS_INFO_STREAM_THROTTLE(1.0, "Desired Position during pushing: [" << x_desired_.transpose() << "]");
+                    desired_position_to_publish = x_desired_; // Update desired position for publishing
+
+                    // Assign force command to publish
+                    force_command_to_publish = F_desired;
+
+                    // Prepare desired end-effector velocity for publishing
+                    x_dot_desired_vec6_.head<3>() = x_dot_desired_;
+                    x_dot_desired_vec6_.tail<3>().setZero(); // Assuming zero angular velocity
 
                     break;
                 }
+                case 4:
+                {
+                    // Initialize trajectory once
+                    if (!trajectory_initialized_)
+                    {
+                        trajectory_start_time_ = total_time_;
+                        trajectory_duration_ = 5.0; // Duration in seconds
 
+                        // Store starting joint positions
+                        q_start_.resize(n_joints_);
+                        for (int i = 0; i < n_joints_; i++)
+                        {
+                            q_start_(i) = q_(i);
+                        }
+                     
+                        // Set goal joint positions (convert degrees to radians)
+                        q_goal_.resize(n_joints_);
+                        q_goal_.data.setZero(); // Ensure the data vector is initialized
+                        q_goal_(0) = 0.0 * PI / 180.0;
+                        q_goal_(1) = -15.0 * PI / 180.0;
+                        q_goal_(2) = 60.0 * PI / 180.0;
+                        q_goal_(3) = 0.0 * PI / 180.0;
+                        q_goal_(4) = 80.0 * PI / 180.0;
+                        q_goal_(5) = 0.0 * PI / 180.0;
+                        q_goal_(6) = 0.0 * PI / 180.0;
+                       
 
+                        trajectory_initialized_ = true;
+                        ROS_INFO("Trajectory initialized for control mode 4.");
+                    }
 
+                    // Compute elapsed time
+                    double t = total_time_ - trajectory_start_time_;
 
-                
+                    // Ensure time doesn't exceed duration
+                    if (t > trajectory_duration_)
+                    {
+                        t = trajectory_duration_;
+                        // Optionally reset trajectory_initialized_ or switch control mode
+                        trajectory_initialized_ = false;
+                        control_stage_buffer_.writeFromNonRT(0); // Switch back to mode 0
+                    }
+
+                    // Prepare desired joint positions, velocities, and accelerations
+                    KDL::JntArray q_desired(n_joints_);
+                    KDL::JntArray qd_desired(n_joints_);
+                    KDL::JntArray qdd_desired(n_joints_);
+
+                    for (int i = 0; i < n_joints_; i++)
+                    {
+                        q_desired(i) = trajectory_generator_pos(q_start_(i), q_goal_(i), trajectory_duration_, t);
+                        qd_desired(i) = trajectory_generator_vel(q_start_(i), q_goal_(i), trajectory_duration_, t);
+                        qdd_desired(i) = trajectory_generator_acc(q_start_(i), q_goal_(i), trajectory_duration_, t);
+                    }
+
+                    // Compute errors
+                    KDL::JntArray q_error(n_joints_);
+                    KDL::JntArray qd_error(n_joints_);
+
+                    for (int i = 0; i < n_joints_; i++)
+                    {
+                        q_error(i) = q_desired(i) - q_(i);
+                        qd_error(i) = qd_desired(i) - qdot_(i);
+                    }
+
+                    //publishing error in position
+                    std_msgs::Float64MultiArray q_error_msg;
+                    q_error_msg.data.resize(n_joints_);
+                    for (int i = 0; i < n_joints_; i++)
+                    {
+                        q_error_msg.data[i] = q_error(i);
+                    }
+
+                    // Publish position errors
+                    error_traj_q.publish(q_error_msg);
+
+                    //publishing error in velocity
+                    std_msgs::Float64MultiArray qd_error_msg;
+                    qd_error_msg.data.resize(n_joints_);
+                    for (int i = 0; i < n_joints_; i++)
+                    {
+                        qd_error_msg.data[i] = qd_error(i);
+                    }
+                    error_traj_qd.publish(qd_error_msg);
+
+                    // Get Mass matrix
+                    KDL::JntSpaceInertiaMatrix M(n_joints_);
+                    id_solver_->JntToMass(q_, M);
+
+                    // Define PD gains
+                    Eigen::VectorXd Kp(n_joints_), Kd(n_joints_);
+                    for (int i = 0; i < n_joints_; i++)
+                    {
+                        Kp(i) = 500.0; // Adjust as needed
+                        Kd(i) = 100.0;  // Adjust as needed
+                    }
+
+                    // Compute control torques
+                    tau_d_.data = M.data * qdd_desired.data + Kp.cwiseProduct(q_error.data) + Kd.cwiseProduct(qd_error.data) + C_.data + G_.data;
+
+                    // Update desired joint positions and velocities for publishing
+                    q_desired_.data = q_desired.data;
+                    qd_desired_.data = qd_desired.data;
+
+                    // No force command to publish in this mode
+                    force_command_to_publish = Eigen::Vector3d::Zero();
+
+                    break;
+                }
                 default:
                 {
                     ROS_WARN("Invalid control mode selected: %d", control_mode);
-                    
                     break;
                 }
             }
@@ -510,13 +660,130 @@ namespace arm_controllers {
                 joints_[i].setCommand(tau_d_.data(i));
             }
 
-            //pub the error
+            // Compute force error
+            Eigen::Vector3d f_cur_force;
+            f_cur_force << f_cur_.force.x(), f_cur_.force.y(), f_cur_.force.z();
+            Eigen::Vector3d force_error = force_command_to_publish - f_cur_force;
+
+            // Publish force command
+            geometry_msgs::WrenchStamped force_command_msg;
+            force_command_msg.header.stamp = ros::Time::now();
+            force_command_msg.wrench.force.x = force_command_to_publish(0);
+            force_command_msg.wrench.force.y = force_command_to_publish(1);
+            force_command_msg.wrench.force.z = force_command_to_publish(2);
+            force_command_msg.wrench.torque.x = 0.0;
+            force_command_msg.wrench.torque.y = 0.0;
+            force_command_msg.wrench.torque.z = 0.0;
+            pub_force_command_.publish(force_command_msg);
+
+            // Publish force control error
+            geometry_msgs::Vector3Stamped force_control_error_msg;
+            force_control_error_msg.header.stamp = ros::Time::now();
+            force_control_error_msg.vector.x = force_error(0);
+            force_control_error_msg.vector.y = force_error(1);
+            force_control_error_msg.vector.z = force_error(2);
+            pub_force_control_error_.publish(force_control_error_msg);
+
+            // Publish error in task space
             geometry_msgs::Vector3Stamped error_msg;
             error_msg.header.stamp = ros::Time::now();
             error_msg.vector.x = ex(0);
             error_msg.vector.y = ex(1);
             error_msg.vector.z = ex(2);
             pub_end_effector_error_.publish(error_msg);
+
+            // Publish force error
+            std_msgs::Float64 force_error_msg;
+            force_error_msg.data = F_error_x_;
+            pub_force_error_.publish(force_error_msg);
+
+            // Publish current end-effector position
+            geometry_msgs::Vector3Stamped ee_position_msg;
+            ee_position_msg.header.stamp = ros::Time::now();
+            ee_position_msg.vector.x = current_position(0);
+            ee_position_msg.vector.y = current_position(1);
+            ee_position_msg.vector.z = current_position(2);
+            pub_end_effector_position_.publish(ee_position_msg);
+
+            // Publish desired end-effector position
+            geometry_msgs::Vector3Stamped desired_ee_position_msg;
+            desired_ee_position_msg.header.stamp = ros::Time::now();
+            desired_ee_position_msg.vector.x = desired_position_to_publish(0);
+            desired_ee_position_msg.vector.y = desired_position_to_publish(1);
+            desired_ee_position_msg.vector.z = desired_position_to_publish(2);
+            pub_desired_end_effector_position_.publish(desired_ee_position_msg);
+
+            // Publish joint positions
+            std_msgs::Float64MultiArray joint_positions_msg;
+            joint_positions_msg.data.resize(n_joints_);
+            for (int i = 0; i < n_joints_; i++)
+            {
+                joint_positions_msg.data[i] = q_(i);
+            }
+            pub_joint_positions_.publish(joint_positions_msg);
+
+            // Publish desired joint positions
+            std_msgs::Float64MultiArray desired_joint_positions_msg;
+            desired_joint_positions_msg.data.resize(n_joints_);
+            for (int i = 0; i < n_joints_; i++)
+            {
+                desired_joint_positions_msg.data[i] = q_desired_(i);
+            }
+            pub_desired_joint_positions_.publish(desired_joint_positions_msg);
+
+            // Publish force sensor readings
+            geometry_msgs::WrenchStamped force_sensor_msg;
+            force_sensor_msg.header.stamp = ros::Time::now();
+            force_sensor_msg.wrench.force.x = f_cur_.force(0);
+            force_sensor_msg.wrench.force.y = f_cur_.force(1);
+            force_sensor_msg.wrench.force.z = f_cur_.force(2);
+            force_sensor_msg.wrench.torque.x = f_cur_.torque(0);
+            force_sensor_msg.wrench.torque.y = f_cur_.torque(1);
+            force_sensor_msg.wrench.torque.z = f_cur_.torque(2);
+            pub_force_sensor_readings_.publish(force_sensor_msg);
+
+            // Publish computed torques
+            std_msgs::Float64MultiArray computed_torques_msg;
+            computed_torques_msg.data.resize(n_joints_);
+            for (int i = 0; i < n_joints_; i++)
+            {
+                computed_torques_msg.data[i] = tau_d_(i);
+            }
+            pub_computed_torques_.publish(computed_torques_msg);
+
+            // Publish joint velocities
+            std_msgs::Float64MultiArray joint_velocities_msg;
+            joint_velocities_msg.data.resize(n_joints_);
+            for (int i = 0; i < n_joints_; i++)
+            {
+                joint_velocities_msg.data[i] = qdot_(i);
+            }
+            pub_joint_velocities_.publish(joint_velocities_msg);
+
+            // Publish desired joint velocities
+            std_msgs::Float64MultiArray desired_joint_velocities_msg;
+            desired_joint_velocities_msg.data.resize(n_joints_);
+            for (int i = 0; i < n_joints_; i++)
+            {
+                desired_joint_velocities_msg.data[i] = qd_desired_(i);
+            }
+            pub_desired_joint_velocities_.publish(desired_joint_velocities_msg);
+
+            // Publish end-effector velocity
+            geometry_msgs::Vector3Stamped ee_velocity_msg;
+            ee_velocity_msg.header.stamp = ros::Time::now();
+            ee_velocity_msg.vector.x = xdot(0);
+            ee_velocity_msg.vector.y = xdot(1);
+            ee_velocity_msg.vector.z = xdot(2);
+            pub_end_effector_velocity_.publish(ee_velocity_msg);
+
+            // Publish desired end-effector velocity
+            geometry_msgs::Vector3Stamped desired_ee_velocity_msg;
+            desired_ee_velocity_msg.header.stamp = ros::Time::now();
+            desired_ee_velocity_msg.vector.x = x_dot_desired_(0);
+            desired_ee_velocity_msg.vector.y = x_dot_desired_(1);
+            desired_ee_velocity_msg.vector.z = x_dot_desired_(2);
+            pub_desired_end_effector_velocity_.publish(desired_ee_velocity_msg);
 
             // Update time
             time_ += dt_;
@@ -575,7 +842,7 @@ namespace arm_controllers {
 
         void updateFTsensor(const geometry_msgs::WrenchStamped::ConstPtr &msg)
         {
-            // Apply low-pass filter to the z-component of the force
+            // Apply low-pass filter to the x-component of the force
             double filt_force_x = first_order_lowpass_filter_z(msg->wrench.force.x);
 
             // Update the force-torque measurements
@@ -586,8 +853,6 @@ namespace arm_controllers {
                                         msg->wrench.torque.y,
                                         msg->wrench.torque.z);
         }
-
-
 
         void controllerCommandCB(const std_msgs::Int32::ConstPtr &msg)
         {
@@ -668,13 +933,13 @@ namespace arm_controllers {
         ros::Subscriber sub_transformed_centers_;
         Eigen::Vector3d desired_position_;
 
-        //comand plan
+        //command plan
         ros::Subscriber sub_controller_command_;
 
         realtime_tools::RealtimeBuffer<int> control_stage_buffer_;
         realtime_tools::RealtimeBuffer<Eigen::Vector3d> desired_position_buffer_;
 
-        //equilibrium controller 
+        // Equilibrium controller 
         // Variables for contact detection and admittance control
         bool contact_detected_;
         double contact_force_threshold_;
@@ -685,9 +950,10 @@ namespace arm_controllers {
         // Admittance control parameters
         double M_adm_, B_adm_, K_adm_;      // Admittance parameters: Mass, Damping, Stiffness
 
-        //error
+        // Error
         ros::Publisher pub_end_effector_error_;
-        //force reading from sensor
+
+        // Force reading from sensor
 
         //
         double desired_force_x_;    // Desired force in the x-direction
@@ -695,17 +961,54 @@ namespace arm_controllers {
         double desired_position_z_; // Desired position in z-direction
         double Kp_z_, Kd_z_;        // PID gains for z-position control
         double F_error_x_prev_;     // Previous force error in x-direction
-        //save tracked
+
+        // Save tracked
         bool desired_position_set_;
         Eigen::Vector3d desired_position_stored_;
         int previous_control_mode_;  
 
-        //admitance 2.0
+        // Admittance 2.0
         bool admittance_initialized_; 
         double desired_force_z_; 
 
-        //push force
-       double push_force_x; 
+        // Push force
+        double push_force_x; 
+
+        // Case 4 trajectory planning
+        bool trajectory_initialized_;
+        double trajectory_start_time_;
+        double trajectory_duration_;
+        KDL::JntArray q_start_;
+        KDL::JntArray q_goal_;
+
+        // Error trajectory
+        ros::Publisher error_traj_q;
+        ros::Publisher error_traj_qd;
+
+        // Additional publishers for telemetry data
+        ros::Publisher pub_control_stage_;
+        ros::Publisher pub_force_error_;
+        ros::Publisher pub_end_effector_position_;
+        ros::Publisher pub_desired_end_effector_position_;
+        ros::Publisher pub_joint_positions_;
+        ros::Publisher pub_desired_joint_positions_;
+        ros::Publisher pub_force_sensor_readings_;
+        ros::Publisher pub_computed_torques_;
+        ros::Publisher pub_joint_velocities_;
+        ros::Publisher pub_desired_joint_velocities_;
+        ros::Publisher pub_end_effector_velocity_;
+        ros::Publisher pub_desired_end_effector_velocity_;
+
+        // Additional publishers for force command and error
+        ros::Publisher pub_force_command_;
+        ros::Publisher pub_force_control_error_;
+
+        // Variables for publishing
+        KDL::JntArray q_desired_; // Desired joint positions
+        KDL::JntArray qd_desired_; // Desired joint velocities
+        Eigen::VectorXd xdot_; // End-effector velocity
+        Eigen::VectorXd x_dot_desired_vec6_; // Desired end-effector velocity for publishing
+        double F_error_x_; // Force error in x-direction
 
     };
 

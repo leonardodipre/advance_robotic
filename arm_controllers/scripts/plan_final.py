@@ -16,7 +16,8 @@ def menu(command_pub, prompt_pub):
         print("1. Move to detected object")
         print("2. Prompt for detection")
         print("3. Push")
-        print("4. Exit")
+        print("4. Trajectory planning")
+        print("5. Exit")
         choice = input("Enter your choice: ")
 
         if choice == '1':
@@ -42,6 +43,10 @@ def menu(command_pub, prompt_pub):
             rospy.loginfo("Comando impostato a 3: Push obj")
             command_pub.publish(current_command)
         elif choice == '4':
+            current_command = 4
+            rospy.loginfo("Comando impostato a 3: Trj planning")
+            command_pub.publish(current_command)
+        elif choice == '5':
             rospy.loginfo("Exiting the program.")
             shutdown_event.set()
             rospy.signal_shutdown("User requested shutdown.")

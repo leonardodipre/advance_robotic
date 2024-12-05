@@ -83,6 +83,7 @@ roslaunch elfin_gazebo obstacol_word.launch controller:=gravity_comp_controller
 
 rosrun plotjuggler plotjuggler -t ROS1
 
+0.45 - 0.85 - 0.1 ( beewten blocks)
 
 
 ESERCIZIO 6

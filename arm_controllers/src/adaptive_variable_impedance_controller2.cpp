@@ -19,8 +19,9 @@
 #include <kdl/chainiksolverpos_nr_jl.hpp>
 #include <kdl_parser/kdl_parser.hpp>
 #include <tf_conversions/tf_kdl.h>
-
+#include <std_msgs/Float64.h>
 #include <boost/scoped_ptr.hpp>
+#include <std_msgs/Float64MultiArray.h>
 
 #define PI 3.141592
 #define D2R PI/180.0
@@ -317,7 +318,7 @@ namespace arm_controllers{
 			}
 			if (!n.getParam("/elfin/adaptive_impedance_controller/aic/k", K_))
 			{
-				K_ = 0.5; // If not found, set stiffness to zero
+				K_ = 5.5; // If not found, set stiffness to zero
 			}
 
 			// Initialize desired velocities
@@ -333,6 +334,9 @@ namespace arm_controllers{
 			pub_SaveData_ = n.advertise<std_msgs::Float64MultiArray>("SaveData", 1000);
 
 			sub_command_ = n.subscribe("/motion_command", 1000, &AdaptiveImpedanceController::commandPosition, this);
+
+			
+			pub_z_positions_ = n.advertise<std_msgs::Float64MultiArray>("/z_positions", 10);
 
 			// Initialize the command buffer with zeros
 			Commands initial_commands;
@@ -604,6 +608,12 @@ namespace arm_controllers{
 				// **Compute Joint Torques**:
 				// tau_d_ = J^T * F_desired + Coriolis + Gravity
 				tau_d_.data = J_.data.transpose() * F_desired + C_.data + G_.data;
+
+				std_msgs::Float64MultiArray z_positions_msg;
+				z_positions_msg.data.resize(2); // Ensure the vector has two elements
+				z_positions_msg.data[0] = xd(2);                // Desired z-position
+				z_positions_msg.data[1] = current_position(2);  // Actual z-position
+				pub_z_positions_.publish(z_positions_msg);
 			}
 
 			else if (control_stage_ == 3)
@@ -664,6 +674,7 @@ namespace arm_controllers{
 
 			else if (control_stage_ == 4)
 			{
+				//impendace controll
 				// Time variable
 				double t = total_time_;
 
@@ -866,6 +877,9 @@ namespace arm_controllers{
 		Eigen::MatrixXd Md; // Desired mass matrix
 		Eigen::MatrixXd Kd; // Damping matrix
 		Eigen::MatrixXd Kp; // Stiffness matrix
+
+		ros::Publisher pub_z_positions_;
+
 	};
 }
 
